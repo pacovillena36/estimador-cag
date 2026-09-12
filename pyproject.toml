@@ -1,0 +1,19 @@
+[project]
+name = "estimador-cag"
+version = "0.1.0"
+description = "Estimador con arquitectura CAG (Cache-Augmented Generation) construido con FastAPI"
+authors = [
+    { name = "pacovillena36", email = "pacovillena36@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic-settings",
+    "openai",
+    "anthropic",
+    "python-dotenv",
+]
+
+[tool.uv]
+package = false
