@@ -22,8 +22,9 @@ class Settings(BaseSettings):
     llm_provider: Literal["openai", "anthropic"] = "anthropic"
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
+    anthropic_workspace_id: str | None = None
     openai_model: str = "gpt-4o-mini"
-    anthropic_model: str = "claude-sonnet-5"
+    anthropic_model: str = "claude-haiku-4-5"
 
 
 @lru_cache
