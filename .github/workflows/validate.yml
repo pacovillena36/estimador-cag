@@ -1,0 +1,70 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Validate expected folder structure
+        run: |
+          required_files=(
+            "app/__init__.py"
+            "app/main.py"
+            "app/config.py"
+            "app/routers/__init__.py"
+            "app/routers/estimations.py"
+            "app/services/__init__.py"
+            "app/services/llm_service.py"
+            "app/context/__init__.py"
+            "app/context/examples.py"
+            "pyproject.toml"
+          )
+
+          missing=0
+          for f in "${required_files[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Falta el archivo esperado: $f"
+              missing=1
+            else
+              echo "OK: $f"
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Start server and check /health
+        run: |
+          uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 &
+          SERVER_PID=$!
+
+          status=""
+          for i in $(seq 1 15); do
+            status=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/health || true)
+            if [ "$status" = "200" ]; then
+              echo "Servidor arrancado correctamente, /health -> 200"
+              kill "$SERVER_PID"
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "::error::El servidor no respondio 200 en /health (ultimo status: $status)"
+          kill "$SERVER_PID" || true
+          exit 1
