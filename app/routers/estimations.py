@@ -1,11 +1,15 @@
 """Router de estimaciones: expone el endpoint que genera una estimación de
 software a partir de la transcripción de una reunión (arquitectura CAG)."""
 
+import logging
+
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.services.llm_service import generate_estimation
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/estimate", tags=["estimations"])
 
@@ -26,6 +30,13 @@ class EstimationResponse(BaseModel):
 
 @router.post("", response_model=EstimationResponse)
 def create_estimation(request: EstimationRequest) -> EstimationResponse:
+    logger.info(
+        "Nueva solicitud de estimación (provider=%s, %d caracteres)",
+        settings.llm_provider,
+        len(request.transcription),
+    )
+    logger.debug("Transcripción recibida: %s", request.transcription)
+
     estimation = generate_estimation(request.transcription)
 
     model = (
@@ -33,6 +44,8 @@ def create_estimation(request: EstimationRequest) -> EstimationResponse:
         if settings.llm_provider == "openai"
         else settings.anthropic_model
     )
+
+    logger.info("Estimación generada correctamente (model=%s)", model)
 
     return EstimationResponse(
         estimation=estimation,

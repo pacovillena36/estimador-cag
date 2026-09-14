@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     environment: str = "development"
     debug: bool = True
     port: int = 8000
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
     # LLM
     llm_provider: Literal["openai", "anthropic"] = "anthropic"
