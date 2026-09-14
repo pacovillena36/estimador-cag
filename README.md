@@ -58,6 +58,80 @@ uv run uvicorn app.main:app --reload
 - Documentación interactiva (Swagger): http://127.0.0.1:8000/docs
 - Health check: http://127.0.0.1:8000/health
 
+## Ejecución desde PowerShell (Windows)
+
+1. Sitúate en la carpeta del proyecto:
+
+   ```powershell
+   cd "C:\Users\fvill\OneDrive\Documentos\formacion\aieng\proyectos\ej1-ScaffoldingFastApi"
+   ```
+
+2. (Si vienes de `git pull` o es la primera vez) instala/actualiza dependencias:
+
+   ```powershell
+   uv sync
+   ```
+
+3. Comprueba que tu `.env` tiene lo necesario: debe existir en la raíz del
+   proyecto con al menos `LLM_PROVIDER` y la API key correspondiente
+   (`ANTHROPIC_API_KEY` + `ANTHROPIC_WORKSPACE_ID` si usas Anthropic, o
+   `OPENAI_API_KEY` si usas OpenAI).
+
+4. Comprueba que el puerto 8000 está libre (por si quedó algo corriendo de antes):
+
+   ```powershell
+   Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
+   ```
+
+   Si te devuelve algo, mátalo:
+
+   ```powershell
+   Stop-Process -Id <ese_PID> -Force
+   ```
+
+5. Arranca el servidor (deja esta ventana abierta, el proceso corre en primer plano):
+
+   ```powershell
+   uv run uvicorn app.main:app --reload
+   ```
+
+   Espera a ver `Uvicorn running on http://127.0.0.1:8000`.
+
+6. Abre **otra** ventana de PowerShell y comprueba `/health`:
+
+   ```powershell
+   Invoke-RestMethod -Uri "http://127.0.0.1:8000/health"
+   ```
+
+   Debe devolver `status: ok`.
+
+7. Prueba el endpoint de estimación con la transcripción de ejemplo:
+
+   ```powershell
+   $path = Join-Path (Get-Location) "transcripcion_ejemplo.md"
+   $transcription = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)
+   $bodyJson = @{ transcription = $transcription } | ConvertTo-Json -Compress
+   $bytes = [System.Text.Encoding]::UTF8.GetBytes($bodyJson)
+
+   $response = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/api/v1/estimate" `
+     -ContentType "application/json; charset=utf-8" `
+     -Body $bytes
+
+   $response.provider
+   $response.model
+   $response.estimation
+   ```
+
+   Usa `[System.IO.File]::ReadAllText` en vez de `Get-Content -Raw` — en
+   PowerShell 5.1, `Get-Content` añade metadatos del proveedor de archivos
+   que rompen el JSON al serializarlo con `ConvertTo-Json`.
+
+8. (Opcional) Prueba también desde el navegador: abre `http://127.0.0.1:8000/docs`,
+   expande `POST /api/v1/estimate` → "Try it out" → pega un JSON con tu
+   propia transcripción → "Execute".
+
+9. Para parar el servidor: vuelve a la ventana del paso 5 y pulsa `Ctrl+C`.
+
 ## Uso del endpoint de estimaciones
 
 `POST /api/v1/estimate` recibe la transcripción de una reunión y devuelve
