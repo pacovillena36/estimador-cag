@@ -147,7 +147,25 @@ curl -X POST http://127.0.0.1:8000/api/v1/estimate \
   -H "Content-Type: application/json" \
   -d "$(python -c "import json,sys; print(json.dumps({'transcription': open('transcripcion_ejemplo.md', encoding='utf-8').read()}))")"
 ```
+or
+```powershell
+  $projectDir = "C:\Users\fvill\OneDrive\Documentos\formacion\aieng\proyectos\ej1-ScaffoldingFastApi"
+  $path = Join-Path $projectDir "transcripcion_ejemplo.md"
+  $transcription = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)
+  $bodyJson = @{ transcription = $transcription } | ConvertTo-Json -Compress
 
+  $bodyFile = Join-Path $env:TEMP "body_temp.json"
+  [System.IO.File]::WriteAllText($bodyFile, $bodyJson, [System.Text.Encoding]::UTF8)
+
+  curl.exe -X POST http://127.0.0.1:8000/api/v1/estimate `
+    -H "Content-Type: application/json; charset=utf-8" `
+    -d "@$bodyFile"
+
+  Remove-Item $bodyFile
+```
+ La clave es -d "@$bodyFile" — el @ le dice a curl.exe que lea el body directamente del archivo, así nunca pasa por el troceo de PowerShell (que es lo que rompía todo antes con el texto multilínea pasado como
+  argumento).
+  
 O simplemente abre `/docs`, pega el contenido de `transcripcion_ejemplo.md`
 en el campo `transcription` de `POST /api/v1/estimate` y ejecuta la
 petición desde ahí.
