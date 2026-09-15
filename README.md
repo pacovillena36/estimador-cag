@@ -140,32 +140,40 @@ ejemplos few-shot de `app/context/examples.py` (arquitectura CAG).
 
 En [`transcripcion_ejemplo.md`](transcripcion_ejemplo.md) tienes una
 transcripción de reunión de ejemplo lista para usar como parámetro de
-prueba. Por ejemplo, con `jq` para extraer el texto y montarlo en el JSON:
+prueba.
+
+**Desde Bash / Git Bash**, usando Python para generar el JSON con el texto ya escapado:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/estimate \
   -H "Content-Type: application/json" \
   -d "$(python -c "import json,sys; print(json.dumps({'transcription': open('transcripcion_ejemplo.md', encoding='utf-8').read()}))")"
 ```
-or
+
+**Desde PowerShell**, escribiendo el body a un archivo temporal para que `curl.exe`
+lo lea directamente con `-d "@archivo"` (evita que PowerShell trocee el texto
+multilínea al pasarlo como argumento):
+
 ```powershell
-  $projectDir = "C:\Users\fvill\OneDrive\Documentos\formacion\aieng\proyectos\ej1-ScaffoldingFastApi"
-  $path = Join-Path $projectDir "transcripcion_ejemplo.md"
-  $transcription = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)
-  $bodyJson = @{ transcription = $transcription } | ConvertTo-Json -Compress
+$projectDir = "C:\Users\fvill\OneDrive\Documentos\formacion\aieng\proyectos\ej1-ScaffoldingFastApi"
+$path = Join-Path $projectDir "transcripcion_ejemplo.md"
+$transcription = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)
+$bodyJson = @{ transcription = $transcription } | ConvertTo-Json -Compress
 
-  $bodyFile = Join-Path $env:TEMP "body_temp.json"
-  [System.IO.File]::WriteAllText($bodyFile, $bodyJson, [System.Text.Encoding]::UTF8)
+$bodyFile = Join-Path $env:TEMP "body_temp.json"
+[System.IO.File]::WriteAllText($bodyFile, $bodyJson, [System.Text.Encoding]::UTF8)
 
-  curl.exe -X POST http://127.0.0.1:8000/api/v1/estimate `
-    -H "Content-Type: application/json; charset=utf-8" `
-    -d "@$bodyFile"
+curl.exe -X POST http://127.0.0.1:8000/api/v1/estimate `
+  -H "Content-Type: application/json; charset=utf-8" `
+  -d "@$bodyFile"
 
-  Remove-Item $bodyFile
+Remove-Item $bodyFile
 ```
- La clave es -d "@$bodyFile" — el @ le dice a curl.exe que lea el body directamente del archivo, así nunca pasa por el troceo de PowerShell (que es lo que rompía todo antes con el texto multilínea pasado como
-  argumento).
-  
+
+La clave es `-d "@$bodyFile"`: el `@` le dice a `curl.exe` que lea el body
+directamente del archivo, así nunca pasa por el troceo de argumentos de
+PowerShell.
+
 O simplemente abre `/docs`, pega el contenido de `transcripcion_ejemplo.md`
 en el campo `transcription` de `POST /api/v1/estimate` y ejecuta la
 petición desde ahí.
