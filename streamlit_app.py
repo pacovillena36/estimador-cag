@@ -29,7 +29,8 @@ except Exception:
     pass  # No hay secrets.toml (por ejemplo, en local con solo .env)
 
 from app.config import settings  # noqa: E402
-from app.services.llm_service import generate_estimation_stream  # noqa: E402
+from app.context.examples import ESTIMATION_EXAMPLES  # noqa: E402
+from app.services.llm_service import build_system_prompt, generate_estimation_stream  # noqa: E402
 
 st.set_page_config(page_title="Estimador CAG", page_icon="🧮")
 
@@ -48,6 +49,8 @@ st.write(
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "last_metrics" not in st.session_state:
+    st.session_state.last_metrics = None
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -62,12 +65,48 @@ if transcription:
 
     with st.chat_message("assistant"):
         try:
-            # st.write_stream consume el generador (que llama a la API del
+            chunks, metrics = generate_estimation_stream(transcription)
+            # st.write_stream consume el iterador (que llama a la API del
             # proveedor en modo stream=True) y va pintando cada delta de
             # texto en cuanto llega; devuelve la respuesta completa acumulada.
-            estimation = st.write_stream(generate_estimation_stream(transcription))
+            # Al agotarse, `metrics` queda relleno con modelo/tokens/tiempo.
+            estimation = st.write_stream(chunks)
+            st.session_state.last_metrics = metrics
         except Exception as exc:
             estimation = f"⚠️ Error al generar la estimación: {exc}"
             st.markdown(estimation)
 
     st.session_state.messages.append({"role": "assistant", "content": estimation})
+
+with st.sidebar:
+    st.header("Contexto CAG")
+
+    with st.expander("System prompt activo"):
+        st.text_area(
+            "system prompt",
+            value=build_system_prompt(),
+            height=400,
+            disabled=True,
+            label_visibility="collapsed",
+        )
+
+    with st.expander(f"Ejemplos inyectados ({len(ESTIMATION_EXAMPLES)})"):
+        for i, example in enumerate(ESTIMATION_EXAMPLES, start=1):
+            st.markdown(f"**Ejemplo {i} — resumen de reunión**")
+            st.markdown(example["meeting_summary"])
+            st.markdown("**Estimación generada:**")
+            st.markdown(example["estimation"])
+            if i < len(ESTIMATION_EXAMPLES):
+                st.divider()
+
+    st.header("Última llamada")
+    metrics = st.session_state.last_metrics
+    if metrics is None:
+        st.caption("Todavía no se ha generado ninguna estimación.")
+    else:
+        st.metric("Modelo", metrics.model)
+        col1, col2 = st.columns(2)
+        col1.metric("Tokens entrada", metrics.input_tokens)
+        col2.metric("Tokens salida", metrics.output_tokens)
+        if metrics.elapsed_seconds is not None:
+            st.metric("Tiempo de respuesta", f"{metrics.elapsed_seconds:.2f} s")

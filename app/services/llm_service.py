@@ -2,7 +2,9 @@
 al proveedor configurado (OpenAI o Anthropic) para generar una estimación.
 """
 
+import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 from anthropic import Anthropic
 from openai import OpenAI
@@ -94,8 +96,24 @@ def generate_estimation(meeting_transcript: str) -> str:
     raise ValueError(f"Proveedor LLM no soportado: {settings.llm_provider}")
 
 
-def _call_openai_stream(system_prompt: str, meeting_transcript: str) -> Iterator[str]:
+@dataclass
+class StreamMetrics:
+    """Metadatos de una llamada en streaming, rellenados progresivamente a
+    medida que se consume el generador de texto y completos una vez agotado.
+    """
+
+    provider: str = ""
+    model: str = ""
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    elapsed_seconds: float | None = None
+
+
+def _call_openai_stream(
+    system_prompt: str, meeting_transcript: str, metrics: StreamMetrics
+) -> Iterator[str]:
     client = OpenAI(api_key=settings.openai_api_key)
+    start = time.perf_counter()
     stream = client.chat.completions.create(
         model=settings.openai_model,
         messages=[
@@ -103,19 +121,31 @@ def _call_openai_stream(system_prompt: str, meeting_transcript: str) -> Iterator
             {"role": "user", "content": meeting_transcript},
         ],
         stream=True,
+        stream_options={"include_usage": True},
     )
     for chunk in stream:
-        delta = chunk.choices[0].delta.content
-        if delta:
-            yield delta
+        if chunk.usage is not None:
+            metrics.input_tokens = chunk.usage.prompt_tokens
+            metrics.output_tokens = chunk.usage.completion_tokens
+        if chunk.choices:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
+
+    metrics.provider = "openai"
+    metrics.model = settings.openai_model
+    metrics.elapsed_seconds = time.perf_counter() - start
 
 
-def _call_anthropic_stream(system_prompt: str, meeting_transcript: str) -> Iterator[str]:
+def _call_anthropic_stream(
+    system_prompt: str, meeting_transcript: str, metrics: StreamMetrics
+) -> Iterator[str]:
     extra_headers = {}
     if settings.anthropic_workspace_id:
         extra_headers["anthropic-workspace-id"] = settings.anthropic_workspace_id
 
     client = Anthropic(api_key=settings.anthropic_api_key)
+    start = time.perf_counter()
     with client.messages.stream(
         model=settings.anthropic_model,
         max_tokens=2048,
@@ -126,18 +156,32 @@ def _call_anthropic_stream(system_prompt: str, meeting_transcript: str) -> Itera
         extra_headers=extra_headers,
     ) as stream:
         yield from stream.text_stream
+        final_message = stream.get_final_message()
+
+    metrics.provider = "anthropic"
+    metrics.model = final_message.model
+    metrics.input_tokens = final_message.usage.input_tokens
+    metrics.output_tokens = final_message.usage.output_tokens
+    metrics.elapsed_seconds = time.perf_counter() - start
 
 
-def generate_estimation_stream(meeting_transcript: str) -> Iterator[str]:
+def generate_estimation_stream(
+    meeting_transcript: str,
+) -> tuple[Iterator[str], StreamMetrics]:
     """Genera una estimación en streaming, token a token, usando el modo
     streaming nativo de la API del proveedor configurado (SSE), no una
     simulación sobre una respuesta ya completa.
+
+    Devuelve el iterador de texto junto con un `StreamMetrics` que se va
+    rellenando (tokens, modelo, tiempo de respuesta) a medida que se agota
+    el iterador; sus campos están completos una vez consumido por entero.
     """
     system_prompt = build_system_prompt()
+    metrics = StreamMetrics()
 
     if settings.llm_provider == "openai":
-        return _call_openai_stream(system_prompt, meeting_transcript)
+        return _call_openai_stream(system_prompt, meeting_transcript, metrics), metrics
     if settings.llm_provider == "anthropic":
-        return _call_anthropic_stream(system_prompt, meeting_transcript)
+        return _call_anthropic_stream(system_prompt, meeting_transcript, metrics), metrics
 
     raise ValueError(f"Proveedor LLM no soportado: {settings.llm_provider}")

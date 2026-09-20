@@ -26,6 +26,7 @@ estimador-cag/
 ├── .env.example
 ├── .gitignore
 ├── pyproject.toml
+├── streamlit_app.py             # Interfaz de chat (Streamlit) sobre el mismo servicio LLM
 ├── transcripcion_ejemplo.md     # Transcripción de reunión de ejemplo (input de prueba)
 └── README.md
 ```
@@ -187,6 +188,53 @@ Respuesta esperada (`200`):
   "provider": "anthropic"
 }
 ```
+
+## Interfaz conversacional (Streamlit)
+
+Además de la API, el proyecto incluye una interfaz de chat en
+[`streamlit_app.py`](streamlit_app.py) que reutiliza directamente el mismo
+servicio (`app/services/llm_service.py`): construye el mismo system prompt
+CAG con los mismos ejemplos few-shot y llama al proveedor LLM configurado en
+`.env`, sin duplicar lógica.
+
+Arranque:
+
+```bash
+uv run streamlit run streamlit_app.py
+```
+
+> **Windows:** si tu equipo tiene activada una directiva de App Control que
+> bloquea `streamlit.exe` (error `os error 4551` / "Una directiva de Control
+> de aplicaciones bloqueó este archivo"), invócalo como módulo de Python en
+> su lugar:
+>
+> ```powershell
+> uv run python -m streamlit run streamlit_app.py
+> ```
+
+Abre `http://localhost:8501`, pega la transcripción (o resumen) de una
+reunión en el cuadro de chat y la estimación se genera en la misma sesión.
+
+**Características:**
+
+- **Chat con historial de sesión**: cada transcripción enviada y su
+  estimación se guardan en `st.session_state`, así que el historial persiste
+  mientras dure la sesión del navegador (se pierde al recargar la página).
+- **Streaming token a token**: la respuesta se muestra progresivamente según
+  la va generando el modelo (`st.write_stream`), usando el modo streaming
+  nativo de la API del proveedor (`stream=True` en OpenAI / `messages.stream`
+  en Anthropic) — no es una simulación sobre una respuesta ya completa.
+- **Panel lateral (sidebar)** con:
+  - El **system prompt activo** en modo solo lectura.
+  - Los **ejemplos de contexto CAG** (`ESTIMATION_EXAMPLES`) tal como se
+    inyectan en el prompt.
+  - **Métricas de la última llamada**: modelo usado, tokens de entrada/salida
+    y tiempo de respuesta.
+- **API keys**: se leen igual que en la API, vía `app.config.settings`
+  (`.env`). Para desplegar en Streamlit Cloud (donde no existe `.env`), si
+  una clave no está en el entorno pero sí en `st.secrets`, se copia a las
+  variables de entorno antes de inicializar la configuración — nunca se
+  hardcodea ninguna clave en el código.
 
 ## CI
 
