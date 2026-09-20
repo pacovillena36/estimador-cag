@@ -13,6 +13,7 @@ dependencies = [
     "openai",
     "anthropic",
     "python-dotenv",
+    "streamlit>=1.64.0",
 ]
 
 [tool.uv]
