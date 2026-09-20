@@ -29,7 +29,7 @@ except Exception:
     pass  # No hay secrets.toml (por ejemplo, en local con solo .env)
 
 from app.config import settings  # noqa: E402
-from app.services.llm_service import generate_estimation  # noqa: E402
+from app.services.llm_service import generate_estimation_stream  # noqa: E402
 
 st.set_page_config(page_title="Estimador CAG", page_icon="🧮")
 
@@ -61,11 +61,13 @@ if transcription:
         st.markdown(transcription)
 
     with st.chat_message("assistant"):
-        with st.spinner("Generando estimación..."):
-            try:
-                estimation = generate_estimation(transcription)
-            except Exception as exc:
-                estimation = f"⚠️ Error al generar la estimación: {exc}"
-        st.markdown(estimation)
+        try:
+            # st.write_stream consume el generador (que llama a la API del
+            # proveedor en modo stream=True) y va pintando cada delta de
+            # texto en cuanto llega; devuelve la respuesta completa acumulada.
+            estimation = st.write_stream(generate_estimation_stream(transcription))
+        except Exception as exc:
+            estimation = f"⚠️ Error al generar la estimación: {exc}"
+            st.markdown(estimation)
 
     st.session_state.messages.append({"role": "assistant", "content": estimation})

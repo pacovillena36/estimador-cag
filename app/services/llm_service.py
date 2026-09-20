@@ -2,6 +2,8 @@
 al proveedor configurado (OpenAI o Anthropic) para generar una estimación.
 """
 
+from collections.abc import Iterator
+
 from anthropic import Anthropic
 from openai import OpenAI
 
@@ -88,5 +90,54 @@ def generate_estimation(meeting_transcript: str) -> str:
         return _call_openai(system_prompt, meeting_transcript)
     if settings.llm_provider == "anthropic":
         return _call_anthropic(system_prompt, meeting_transcript)
+
+    raise ValueError(f"Proveedor LLM no soportado: {settings.llm_provider}")
+
+
+def _call_openai_stream(system_prompt: str, meeting_transcript: str) -> Iterator[str]:
+    client = OpenAI(api_key=settings.openai_api_key)
+    stream = client.chat.completions.create(
+        model=settings.openai_model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": meeting_transcript},
+        ],
+        stream=True,
+    )
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
+
+
+def _call_anthropic_stream(system_prompt: str, meeting_transcript: str) -> Iterator[str]:
+    extra_headers = {}
+    if settings.anthropic_workspace_id:
+        extra_headers["anthropic-workspace-id"] = settings.anthropic_workspace_id
+
+    client = Anthropic(api_key=settings.anthropic_api_key)
+    with client.messages.stream(
+        model=settings.anthropic_model,
+        max_tokens=2048,
+        system=system_prompt,
+        messages=[
+            {"role": "user", "content": meeting_transcript},
+        ],
+        extra_headers=extra_headers,
+    ) as stream:
+        yield from stream.text_stream
+
+
+def generate_estimation_stream(meeting_transcript: str) -> Iterator[str]:
+    """Genera una estimación en streaming, token a token, usando el modo
+    streaming nativo de la API del proveedor configurado (SSE), no una
+    simulación sobre una respuesta ya completa.
+    """
+    system_prompt = build_system_prompt()
+
+    if settings.llm_provider == "openai":
+        return _call_openai_stream(system_prompt, meeting_transcript)
+    if settings.llm_provider == "anthropic":
+        return _call_anthropic_stream(system_prompt, meeting_transcript)
 
     raise ValueError(f"Proveedor LLM no soportado: {settings.llm_provider}")
