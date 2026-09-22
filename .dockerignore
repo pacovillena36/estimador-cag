@@ -1,0 +1,10 @@
+.venv
+__pycache__
+**/__pycache__
+*.py[oc]
+.git
+.github
+.env
+uv.lock.bak
+transcripcion_ejemplo.md
+README.md
