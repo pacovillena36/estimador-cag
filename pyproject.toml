@@ -14,6 +14,7 @@ dependencies = [
     "anthropic",
     "python-dotenv",
     "streamlit>=1.64.0",
+    "httpx2",
 ]
 
 [tool.uv]

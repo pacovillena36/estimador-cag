@@ -15,18 +15,21 @@ estimador-cag/
 │   ├── config.py                # Configuración (pydantic-settings)
 │   ├── routers/
 │   │   ├── __init__.py
-│   │   └── estimations.py       # POST /api/v1/estimate
+│   │   └── estimations.py       # POST /api/v1/estimate (+ /estimate/stream, SSE)
 │   ├── services/
 │   │   ├── __init__.py
 │   │   └── llm_service.py       # Construcción del prompt CAG + llamada al LLM
 │   └── context/
 │       ├── __init__.py
 │       └── examples.py          # Ejemplos few-shot (contexto CAG)
+├── .dockerignore
 ├── .env
 ├── .env.example
 ├── .gitignore
+├── Dockerfile                    # Imagen única (Python 3.12 + uv) para API y chat
+├── docker-compose.yml            # Servicios "api" (uvicorn) y "chat" (Streamlit)
 ├── pyproject.toml
-├── streamlit_app.py             # Interfaz de chat (Streamlit) sobre el mismo servicio LLM
+├── streamlit_app.py              # Interfaz de chat (Streamlit), cliente HTTP de la API
 ├── transcripcion_ejemplo.md     # Transcripción de reunión de ejemplo (input de prueba)
 └── README.md
 ```
@@ -132,6 +135,36 @@ uv run uvicorn app.main:app --reload
    propia transcripción → "Execute".
 
 9. Para parar el servidor: vuelve a la ventana del paso 5 y pulsa `Ctrl+C`.
+
+## Ejecución con Docker
+
+Alternativa a instalar Python/`uv` en local: una única imagen (`Dockerfile`,
+`python:3.12-slim` + `uv`) reutilizada por dos servicios en
+`docker-compose.yml` — `api` (uvicorn, puerto 8000) y `chat` (Streamlit,
+puerto 8501) — cada uno con su propio comando de arranque.
+
+```bash
+docker compose up --build -d
+```
+
+- API → http://localhost:8000/docs (o `/health`)
+- Chat → http://localhost:8501
+
+Los puertos se publican solo en `127.0.0.1` (no en `0.0.0.0`), así que no son
+alcanzables desde otras máquinas de la red — el endpoint `/estimate` no tiene
+autenticación propia, así que conviene mantener esta restricción salvo que se
+añada una.
+
+Ver logs / parar:
+
+```bash
+docker compose logs -f
+docker compose down
+```
+
+El servicio `chat` recibe `API_BASE_URL=http://api:8000` (nombre del
+servicio en la red interna de Docker) para poder llamar a la API — ver
+[Interfaz conversacional (Streamlit)](#interfaz-conversacional-streamlit).
 
 ## Uso del endpoint de estimaciones
 
