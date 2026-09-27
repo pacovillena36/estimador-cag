@@ -21,6 +21,7 @@ API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 # presentes en st.secrets que aún no estén definidas, antes de importar.
 _SECRET_ENV_KEYS = (
     "LLM_PROVIDER",
+    "LLM_FALLBACK_ENABLED",
     "OPENAI_API_KEY",
     "OPENAI_MODEL",
     "ANTHROPIC_API_KEY",
@@ -56,11 +57,21 @@ def request_estimation_stream(transcription: str):
             json={"transcription": transcription},
             timeout=120.0,
         ) as response:
-            response.raise_for_status()
+            if response.status_code >= 400:
+                # La API devuelve errores con un "detail" pensado para
+                # mostrarse al usuario (sin detalles internos del proveedor).
+                response.read()
+                try:
+                    detail = response.json().get("detail")
+                except ValueError:
+                    detail = None
+                raise RuntimeError(detail or f"La API respondió {response.status_code}")
             for event in httpx2.EventSource(response):
                 payload = event.json()
                 if event.event == "done":
                     metrics.update(payload)
+                elif event.event == "error":
+                    raise RuntimeError(payload["detail"])
                 else:
                     yield payload["delta"]
 
@@ -69,12 +80,13 @@ def request_estimation_stream(transcription: str):
 st.set_page_config(page_title="Estimador CAG", page_icon="🧮")
 
 st.title("🧮 Estimador CAG")
-active_model = (
-    settings.anthropic_model
-    if settings.llm_provider == "anthropic"
-    else settings.openai_model
+_fallback = "anthropic" if settings.llm_provider == "openai" else "openai"
+_chain = (
+    f"**{settings.llm_provider}** → {_fallback} (fallback)"
+    if settings.llm_fallback_enabled
+    else f"**{settings.llm_provider}**"
 )
-st.caption(f"Proveedor: **{settings.llm_provider}** · Modelo: **{active_model}**")
+st.caption(f"Proveedores: {_chain}")
 st.write(
     "Pega la transcripción (o resumen) de una reunión con el cliente y "
     "recibirás una estimación de esfuerzo generada con el mismo formato y "
@@ -86,9 +98,13 @@ if "messages" not in st.session_state:
 if "last_metrics" not in st.session_state:
     st.session_state.last_metrics = None
 
+CACHE_NOTICE = "⚡ Respuesta servida desde caché: no se ha llamado al proveedor."
+
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+        if message.get("cached"):
+            st.info(CACHE_NOTICE)
 
 transcription = st.chat_input("Pega aquí la transcripción de la reunión...")
 
@@ -97,6 +113,7 @@ if transcription:
     with st.chat_message("user"):
         st.markdown(transcription)
 
+    cached = False
     with st.chat_message("assistant"):
         try:
             chunks, metrics = request_estimation_stream(transcription)
@@ -106,11 +123,16 @@ if transcription:
             # Al agotarse, `metrics` queda relleno con modelo/tokens/tiempo.
             estimation = st.write_stream(chunks)
             st.session_state.last_metrics = metrics
+            cached = bool(metrics.get("cached"))
+            if cached:
+                st.info(CACHE_NOTICE)
         except Exception as exc:
             estimation = f"⚠️ Error al generar la estimación: {exc}"
             st.markdown(estimation)
 
-    st.session_state.messages.append({"role": "assistant", "content": estimation})
+    st.session_state.messages.append(
+        {"role": "assistant", "content": estimation, "cached": cached}
+    )
 
 with st.sidebar:
     st.header("Contexto CAG")
@@ -138,10 +160,17 @@ with st.sidebar:
     if not metrics:
         st.caption("Todavía no se ha generado ninguna estimación.")
     else:
+        st.metric("Proveedor", metrics.get("provider"))
         st.metric("Modelo", metrics.get("model"))
+        st.metric("Caché", "HIT ⚡" if metrics.get("cached") else "MISS")
         col1, col2 = st.columns(2)
         col1.metric("Tokens entrada", metrics.get("input_tokens"))
         col2.metric("Tokens salida", metrics.get("output_tokens"))
         elapsed = metrics.get("elapsed_seconds")
         if elapsed is not None:
             st.metric("Tiempo de respuesta", f"{elapsed:.2f} s")
+        cost = metrics.get("cost_usd")
+        if cost is not None:
+            st.metric("Coste estimado", f"${cost:.6f}")
+        if metrics.get("finish_reason") == "length":
+            st.warning("La respuesta se truncó por el límite de tokens (LLM_MAX_TOKENS).")

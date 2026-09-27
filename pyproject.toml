@@ -10,12 +10,17 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "pydantic-settings",
-    "openai",
-    "anthropic",
     "python-dotenv",
     "streamlit>=1.64.0",
     "httpx2",
+    "litellm>=1.102.1",
+    "structlog>=26.1.0",
 ]
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

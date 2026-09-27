@@ -27,6 +27,9 @@ jobs:
             "app/routers/estimations.py"
             "app/services/__init__.py"
             "app/services/llm_service.py"
+            "app/services/llm_gateway.py"
+            "app/services/cache.py"
+            "app/logging_config.py"
             "app/context/__init__.py"
             "app/context/examples.py"
             "pyproject.toml"
@@ -49,7 +52,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
 
+      - name: Run tests
+        # Los tests simulan los proveedores: no necesitan API keys reales.
+        run: uv run pytest -q
+
       - name: Start server and check /health
+        env:
+          # La API no arranca sin al menos un proveedor configurado (fail
+          # fast). Para comprobar /health basta una clave ficticia: no se
+          # llega a llamar a ningún proveedor.
+          ANTHROPIC_API_KEY: ci-dummy-key
         run: |
           uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 &
           SERVER_PID=$!

@@ -8,3 +8,5 @@ __pycache__
 uv.lock.bak
 transcripcion_ejemplo.md
 README.md
+tests
+.pytest_cache

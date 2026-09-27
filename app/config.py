@@ -1,7 +1,10 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ProviderName = Literal["openai", "anthropic"]
 
 
 class Settings(BaseSettings):
@@ -18,14 +21,34 @@ class Settings(BaseSettings):
     debug: bool = True
     port: int = 8000
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    # "console" (legible, para desarrollo) o "json" (una línea JSON por
+    # evento, para producción / agregadores de logs)
+    log_format: Literal["console", "json"] = "console"
 
     # LLM
-    llm_provider: Literal["openai", "anthropic"] = "anthropic"
-    openai_api_key: str | None = None
-    anthropic_api_key: str | None = None
+    # Proveedor preferido; si falla y el fallback está activo, el wrapper
+    # rota al otro proveedor (siempre que tenga API key configurada).
+    llm_provider: ProviderName = "anthropic"
+    llm_fallback_enabled: bool = True
+    llm_timeout_seconds: float = 60.0
+    # Reintentos sobre el MISMO proveedor antes de rotar al siguiente.
+    llm_max_retries: int = 1
+    llm_max_tokens: int = 2048
+
+    # SecretStr evita que las claves aparezcan en repr(), logs o trazas.
+    openai_api_key: SecretStr | None = None
+    anthropic_api_key: SecretStr | None = None
     anthropic_workspace_id: str | None = None
     openai_model: str = "gpt-4o-mini"
     anthropic_model: str = "claude-haiku-4-5"
+
+    # Caché exact-match de respuestas del LLM (en memoria, por proceso)
+    llm_cache_enabled: bool = True
+    llm_cache_ttl_seconds: int = 3600
+    llm_cache_max_entries: int = 256
+
+    # Límite de tamaño de la transcripción: acota coste y abuso de la API.
+    max_transcription_chars: int = 50_000
 
 
 @lru_cache

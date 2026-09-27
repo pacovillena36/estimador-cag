@@ -17,4 +17,10 @@ RUN uv sync --frozen --no-dev
 
 ENV PATH="/app/.venv/bin:$PATH"
 
+# Ejecuta como usuario sin privilegios: el código y el entorno siguen
+# siendo de root (solo lectura para la app), así un proceso comprometido
+# no puede modificarlos.
+RUN useradd --create-home --uid 10001 app
+USER app
+
 EXPOSE 8000 8501

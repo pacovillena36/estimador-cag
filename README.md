@@ -8,20 +8,24 @@ Proyecto FastAPI con arquitectura **CAG** (Cache-Augmented Generation) para esti
 estimador-cag/
 ├── .github/
 │   └── workflows/
-│       └── validate.yml         # CI: valida estructura y que /health responda 200
+│       └── validate.yml         # CI: estructura, tests y que /health responda 200
 ├── app/
 │   ├── __init__.py
-│   ├── main.py                  # Punto de entrada de la app FastAPI
-│   ├── config.py                # Configuración (pydantic-settings)
+│   ├── main.py                  # App FastAPI: middleware request_id, errores, lifespan
+│   ├── config.py                # Configuración (pydantic-settings, claves como SecretStr)
+│   ├── logging_config.py        # Logging estructurado con structlog
 │   ├── routers/
 │   │   ├── __init__.py
 │   │   └── estimations.py       # POST /api/v1/estimate (+ /estimate/stream, SSE)
 │   ├── services/
 │   │   ├── __init__.py
-│   │   └── llm_service.py       # Construcción del prompt CAG + llamada al LLM
+│   │   ├── llm_gateway.py       # Wrapper de proveedores (LiteLLM): fallback, caché, logging
+│   │   ├── cache.py             # Caché exact-match en memoria (TTL + LRU)
+│   │   └── llm_service.py       # Construcción del prompt CAG (f-string)
 │   └── context/
 │       ├── __init__.py
 │       └── examples.py          # Ejemplos few-shot (contexto CAG)
+├── tests/                        # Tests (pytest) con proveedores simulados
 ├── .dockerignore
 ├── .env
 ├── .env.example
@@ -52,6 +56,83 @@ Copia `.env.example` a `.env` y completa las variables necesarias (claves de API
 ```bash
 cp .env.example .env
 ```
+
+Hace falta al menos una API key (`OPENAI_API_KEY` o `ANTHROPIC_API_KEY`):
+la API no arranca si no hay ningún proveedor configurado. Con las dos, el
+wrapper puede rotar de uno a otro si el preferido (`LLM_PROVIDER`) falla.
+
+## Wrapper de proveedores LLM (LiteLLM)
+
+Los endpoints no hablan con OpenAI ni con Anthropic: llaman a
+`LLMGateway` (`app/services/llm_gateway.py`), que se encarga de todo lo
+relacionado con proveedores y devuelve siempre una respuesta normalizada
+(`LLMResponse`: texto, proveedor, modelo, tokens, latencia, `cached`).
+
+```
+endpoint ──► LLMGateway ──► caché exact-match ──(hit)──► respuesta
+                  │
+                  └─(miss)─► LLM_PROVIDER ──(falla)──► otro proveedor ──(falla)──► 503
+```
+
+- **Abstracción de proveedor**: [LiteLLM](https://docs.litellm.ai/) expone
+  una única API para ambos proveedores (`openai/<modelo>`,
+  `anthropic/<modelo>`).
+- **Fallback**: se prueba primero `LLM_PROVIDER` (con `LLM_MAX_RETRIES`
+  reintentos) y, si falla (timeout, rate limit, 5xx, autenticación...), el
+  siguiente proveedor con API key. Se desactiva con
+  `LLM_FALLBACK_ENABLED=false`. En streaming solo se rota **antes** del
+  primer fragmento: una vez enviado texto al cliente no se puede cambiar de
+  proveedor sin mezclar respuestas, así que se emite un evento SSE `error`.
+- **Caché exact-match**: la misma petición (system prompt + transcripción +
+  parámetros + modelos) se sirve de memoria sin llamar al proveedor. Clave
+  SHA-256, TTL (`LLM_CACHE_TTL_SECONDS`) y tamaño máximo
+  (`LLM_CACHE_MAX_ENTRIES`). Solo se cachean respuestas completas y no
+  vacías. La API recorta espacios/saltos de línea al principio y al final
+  de la transcripción, así que pegar el mismo texto con o sin salto de
+  línea final acierta igual; cualquier otro cambio, por pequeño que sea, es
+  un miss. Es por proceso: con varios workers cada uno tiene la suya, y se
+  vacía al reiniciar la API.
+- **Reintentos**: los errores transitorios (timeout, rate limit, 5xx,
+  conexión) se reintentan `LLM_MAX_RETRIES` veces sobre el mismo proveedor
+  con backoff exponencial antes de rotar; los de autenticación o petición
+  inválida pasan directamente al siguiente proveedor.
+- **Logging estructurado** (structlog), todos los eventos con el
+  `request_id` de la petición (cabecera `X-Request-ID`).
+  `LOG_FORMAT=json` para producción.
+
+### Qué se registra en cada llamada al LLM
+
+| Evento | Cuándo | Campos |
+|---|---|---|
+| `llm.call_started` | Al inicio | `requested_model`, `target_provider`, `input_tokens_estimated`, `cache_hit` |
+| `llm.provider_failed` | En cada error | `provider`, `model`, `error_category` (`timeout`, `rate_limit`, `auth`, `server_error`, `connection`, `bad_request`, `unknown`), `error_type`, `status_code`, `retry`, `will_retry`, `will_fallback`, `latency_ms` |
+| `llm.fallback` | Al rotar de proveedor | `from_provider`, `to_provider`, `to_model` |
+| `llm.call_completed` | Al completar | `provider`, `model`, `input_tokens`, `output_tokens`, `latency_ms` (total, incluidos reintentos), `cost_usd`, `finish_reason` (`stop` / `length` = truncada), `cache_hit`, `fallback_used`, `fallback_provider`, `attempts` |
+| `llm.response_truncated` | Si `finish_reason=length` | `provider`, `model`, `output_tokens` |
+| `llm.call_failed` | Si fallan todos | `providers`, `attempts`, `latency_ms` |
+| `llm.stream_interrupted` | Fallo a mitad de streaming | `provider`, `error_category`, `chars_sent`, ... |
+
+Los tokens de entrada se **estiman** al inicio con el tokenizador de
+LiteLLM (aproximado para Anthropic) y el valor **real** del proveedor se
+registra al completar. El coste se calcula con la tabla de precios local
+de LiteLLM; una respuesta de caché cuesta `0`.
+
+Ejemplo (`LOG_FORMAT=json`, fallback de Anthropic a OpenAI):
+
+```json
+{"event": "llm.call_started", "requested_model": "anthropic/claude-haiku-4-5", "target_provider": "anthropic", "input_tokens_estimated": 1622, "cache_hit": false}
+{"event": "llm.provider_failed", "provider": "anthropic", "error_category": "auth", "status_code": 401, "retry": 0, "will_retry": false, "will_fallback": true, "latency_ms": 707.4}
+{"event": "llm.fallback", "from_provider": "anthropic", "to_provider": "openai", "to_model": "openai/gpt-4o-mini"}
+{"event": "llm.call_completed", "provider": "openai", "input_tokens": 1448, "output_tokens": 259, "latency_ms": 5174.9, "cost_usd": 0.000373, "finish_reason": "stop", "cache_hit": false, "fallback_used": true, "fallback_provider": "openai", "attempts": 2}
+```
+
+**Seguridad**: las API keys son `SecretStr` (nunca salen en logs ni en
+`repr`); no se registra el contenido de las transcripciones, solo su
+tamaño; los errores del proveedor se registran pero al cliente solo le
+llega un mensaje genérico (`503`/`502`); la transcripción tiene un tamaño
+máximo (`MAX_TRANSCRIPTION_CHARS`); la telemetría de LiteLLM está
+desactivada y usa su mapa de modelos local (sin descargas al arrancar); el
+contenedor Docker se ejecuta con un usuario sin privilegios.
 
 ## Ejecución
 
@@ -218,17 +299,24 @@ Respuesta esperada (`200`):
 {
   "estimation": "## Estimación: ...",
   "model": "claude-haiku-4-5",
-  "provider": "anthropic"
+  "provider": "anthropic",
+  "cached": false,
+  "cost_usd": 0.001834,
+  "finish_reason": "stop"
 }
 ```
+
+`provider` y `model` indican quién respondió realmente (puede ser el
+proveedor de fallback). Si todos los proveedores fallan la API devuelve
+`503` con cabecera `Retry-After`.
 
 ## Interfaz conversacional (Streamlit)
 
 Además de la API, el proyecto incluye una interfaz de chat en
-[`streamlit_app.py`](streamlit_app.py) que reutiliza directamente el mismo
-servicio (`app/services/llm_service.py`): construye el mismo system prompt
-CAG con los mismos ejemplos few-shot y llama al proveedor LLM configurado en
-`.env`, sin duplicar lógica.
+[`streamlit_app.py`](streamlit_app.py). Es un cliente HTTP de la API
+(`POST /api/v1/estimate/stream`, en `API_BASE_URL`), así que hereda el
+fallback, la caché y el logging del wrapper sin duplicar lógica; necesita
+la API arrancada.
 
 Arranque:
 
@@ -255,22 +343,34 @@ reunión en el cuadro de chat y la estimación se genera en la misma sesión.
   mientras dure la sesión del navegador (se pierde al recargar la página).
 - **Streaming token a token**: la respuesta se muestra progresivamente según
   la va generando el modelo (`st.write_stream`), usando el modo streaming
-  nativo de la API del proveedor (`stream=True` en OpenAI / `messages.stream`
-  en Anthropic) — no es una simulación sobre una respuesta ya completa.
+  nativo del proveedor a través de LiteLLM (`stream=True`) — no es una
+  simulación sobre una respuesta ya completa. Las respuestas cacheadas se
+  muestran de golpe.
 - **Panel lateral (sidebar)** con:
   - El **system prompt activo** en modo solo lectura.
   - Los **ejemplos de contexto CAG** (`ESTIMATION_EXAMPLES`) tal como se
     inyectan en el prompt.
-  - **Métricas de la última llamada**: modelo usado, tokens de entrada/salida
-    y tiempo de respuesta.
+  - **Métricas de la última llamada**: proveedor y modelo que respondieron,
+    tokens de entrada/salida, tiempo de respuesta y si vino de caché.
 - **API keys**: se leen igual que en la API, vía `app.config.settings`
   (`.env`). Para desplegar en Streamlit Cloud (donde no existe `.env`), si
   una clave no está en el entorno pero sí en `st.secrets`, se copia a las
   variables de entorno antes de inicializar la configuración — nunca se
   hardcodea ninguna clave en el código.
 
+## Tests
+
+```bash
+uv run pytest
+```
+
+Cubren el orden de proveedores, el fallback (también en streaming), la
+caché exact-match, los errores genéricos de la API y el `X-Request-ID`.
+Los proveedores se simulan con `mock_response` de LiteLLM: no hacen falta
+API keys ni se consume saldo.
+
 ## CI
 
 En cada `push` y `pull_request`, `.github/workflows/validate.yml` comprueba
-automáticamente que la estructura de carpetas es correcta y que el servicio
-arranca y `/health` responde `200`.
+automáticamente que la estructura de carpetas es correcta, ejecuta los
+tests y verifica que el servicio arranca y `/health` responde `200`.
