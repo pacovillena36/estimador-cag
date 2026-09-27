@@ -3,9 +3,15 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import settings
 from app.main import app
 from app.services.llm_gateway import get_llm_gateway
+
+VALID_REQUEST = {
+    "description": "Portal interno para reservar salas y puestos de trabajo.",
+    "project_type": "internal_tool",
+    "detail_level": "medium",
+    "output_format": "phases_table",
+}
 
 
 @pytest.fixture
@@ -24,21 +30,54 @@ def _sse_events(body: str) -> list[tuple[str, dict]]:
     return events
 
 
-def test_estimate_returns_normalized_response(client):
-    response = client.post("/api/v1/estimate", json={"transcription": "Reunión X"})
+def test_estimate_returns_text_and_prompt_version(client):
+    response = client.post("/api/v1/estimate", json=VALID_REQUEST)
     assert response.status_code == 200
-    body = response.json()
-    assert body["estimation"] == "Estimación: 40 horas"
-    assert body["model"] == "claude-haiku-4-5"
-    assert body["provider"] == "anthropic"
-    assert body["cached"] is False
-    assert body["finish_reason"] == "stop"
-    assert body["cost_usd"] > 0
+    assert response.json() == {"text": "Estimación: 40 horas", "prompt_version": "v1"}
+
+
+def test_model_receives_separate_system_and_user_messages(client, fake_completion):
+    client.post("/api/v1/estimate", json=VALID_REQUEST)
+
+    system, user = fake_completion.last_messages
+    assert system["role"] == "system"
+    assert user["role"] == "user"
+    assert VALID_REQUEST["description"] in user["content"]
+    assert VALID_REQUEST["description"] not in system["content"]
+    assert "confidence_pct" in system["content"]
+
+
+def test_form_options_change_the_prompt(client, fake_completion):
+    client.post("/api/v1/estimate", json=VALID_REQUEST)
+    table_system = fake_completion.last_messages[0]["content"]
+
+    client.post("/api/v1/estimate", json=VALID_REQUEST | {"output_format": "narrative"})
+    narrative_system = fake_completion.last_messages[0]["content"]
+
+    assert table_system != narrative_system
+    # Opciones distintas -> prompt distinto -> no comparten entrada de caché.
+    assert fake_completion.calls == ["anthropic", "anthropic"]
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"description": "Muy corta"},  # < 20 caracteres
+        {"description": "a" * 2001},  # > 2000 caracteres
+        {"description": "   " + "x" * 5 + "   "},  # < 20 tras recortar espacios
+        {"project_type": "videojuego"},
+        {"detail_level": "extremo"},
+        {"output_format": "pdf"},
+    ],
+)
+def test_invalid_requests_are_rejected(client, override):
+    response = client.post("/api/v1/estimate", json=VALID_REQUEST | override)
+    assert response.status_code == 422
 
 
 def test_estimate_returns_503_without_internal_details(client, fake_completion):
     fake_completion.failing = {"anthropic", "openai"}
-    response = client.post("/api/v1/estimate", json={"transcription": "Reunión X"})
+    response = client.post("/api/v1/estimate", json=VALID_REQUEST)
     assert response.status_code == 503
     assert response.headers["retry-after"] == "30"
     assert "proveedor caído" not in response.text
@@ -46,43 +85,32 @@ def test_estimate_returns_503_without_internal_details(client, fake_completion):
 
 def test_estimate_rejects_empty_model_output(client, fake_completion):
     fake_completion.text = "   "
-    response = client.post("/api/v1/estimate", json={"transcription": "Reunión X"})
+    response = client.post("/api/v1/estimate", json=VALID_REQUEST)
     assert response.status_code == 502
 
 
 def test_surrounding_whitespace_does_not_break_cache(client, fake_completion):
-    first = client.post("/api/v1/estimate", json={"transcription": "Reunión X"})
-    second = client.post("/api/v1/estimate", json={"transcription": "\n  Reunión X \n"})
-    assert first.json()["cached"] is False
-    assert second.json()["cached"] is True
+    padded = VALID_REQUEST | {"description": "\n  " + VALID_REQUEST["description"] + " \n"}
+    client.post("/api/v1/estimate", json=VALID_REQUEST)
+    client.post("/api/v1/estimate", json=padded)
     assert fake_completion.calls == ["anthropic"]
-
-
-def test_whitespace_only_transcription_is_rejected(client):
-    response = client.post("/api/v1/estimate", json={"transcription": "  \n "})
-    assert response.status_code == 422
-
-
-def test_transcription_length_is_limited(client):
-    too_long = "a" * (settings.max_transcription_chars + 1)
-    response = client.post("/api/v1/estimate", json={"transcription": too_long})
-    assert response.status_code == 422
 
 
 def test_stream_emits_deltas_then_done(client, fake_completion):
     fake_completion.failing = {"anthropic"}
-    response = client.post("/api/v1/estimate/stream", json={"transcription": "Reunión X"})
+    response = client.post("/api/v1/estimate/stream", json=VALID_REQUEST)
     assert response.status_code == 200
     events = _sse_events(response.text)
     assert "".join(d["delta"] for e, d in events if e == "delta") == "Estimación: 40 horas"
-    done = events[-1]
-    assert done[0] == "done"
-    assert done[1]["provider"] == "openai"
+    event, done = events[-1]
+    assert event == "done"
+    assert done["provider"] == "openai"
+    assert done["prompt_version"] == "v1"
 
 
 def test_stream_emits_error_event_when_interrupted(client, fake_completion):
     fake_completion.fail_mid_stream = {"anthropic"}
-    response = client.post("/api/v1/estimate/stream", json={"transcription": "Reunión X"})
+    response = client.post("/api/v1/estimate/stream", json=VALID_REQUEST)
     events = _sse_events(response.text)
     assert events[-1][0] == "error"
     assert "conexión perdida" not in response.text

@@ -12,6 +12,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.config import settings
 from app.logging_config import configure_logging
+from app.prompts.loader import validate_estimation_prompt_version
 from app.routers import estimations
 from app.routers.estimations import InvalidEstimationError
 from app.services.llm_gateway import AllProvidersFailedError, get_llm_gateway
@@ -80,9 +81,16 @@ class UTF8JSONResponse(JSONResponse):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # Fail fast: si no hay ningún proveedor con API key, la API no arranca.
+    # Fail fast: la API no arranca si no hay ningún proveedor con API key
+    # o si la versión de prompt configurada no existe.
     gateway = get_llm_gateway()
-    log.info("app.started", environment=settings.environment, llm_providers=gateway.provider_names)
+    validate_estimation_prompt_version(settings.prompt_version)
+    log.info(
+        "app.started",
+        environment=settings.environment,
+        llm_providers=gateway.provider_names,
+        prompt_version=settings.prompt_version,
+    )
     yield
 
 
@@ -90,11 +98,11 @@ app = FastAPI(
     title="Estimador CAG",
     description=(
         "API para generar estimaciones de proyectos de software a partir de "
-        "transcripciones de reuniones, usando una arquitectura CAG "
-        "(Cache-Augmented Generation): ejemplos de estimaciones previas se "
-        "inyectan directamente como contexto en el prompt del LLM."
+        "la descripción del proyecto, su tipo, el nivel de detalle y el "
+        "formato de salida deseados. Los prompts son templates Jinja2 "
+        "versionados con ejemplos few-shot."
     ),
-    version="0.2.0",
+    version="0.3.0",
     default_response_class=UTF8JSONResponse,
     lifespan=lifespan,
 )

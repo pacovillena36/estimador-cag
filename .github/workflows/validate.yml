@@ -26,12 +26,14 @@ jobs:
             "app/routers/__init__.py"
             "app/routers/estimations.py"
             "app/services/__init__.py"
-            "app/services/llm_service.py"
             "app/services/llm_gateway.py"
             "app/services/cache.py"
             "app/logging_config.py"
-            "app/context/__init__.py"
-            "app/context/examples.py"
+            "app/schemas.py"
+            "app/prompts/loader.py"
+            "app/prompts/estimation/v1/system.j2"
+            "app/prompts/estimation/v1/user.j2"
+            "app/prompts/estimation/v1/examples.j2"
             "pyproject.toml"
           )
 

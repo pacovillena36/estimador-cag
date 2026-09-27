@@ -40,15 +40,17 @@ class Settings(BaseSettings):
     anthropic_api_key: SecretStr | None = None
     anthropic_workspace_id: str | None = None
     openai_model: str = "gpt-4o-mini"
-    anthropic_model: str = "claude-haiku-4-5"
+    # Snapshot fechado en lugar del alias: el mismo prompt da resultados
+    # reproducibles aunque Anthropic actualice el alias "claude-haiku-4-5".
+    anthropic_model: str = "claude-haiku-4-5-20251001"
+
+    # Versión de los prompts (carpeta app/prompts/estimation/<versión>/).
+    prompt_version: str = "v1"
 
     # Caché exact-match de respuestas del LLM (en memoria, por proceso)
     llm_cache_enabled: bool = True
     llm_cache_ttl_seconds: int = 3600
     llm_cache_max_entries: int = 256
-
-    # Límite de tamaño de la transcripción: acota coste y abuso de la API.
-    max_transcription_chars: int = 50_000
 
 
 @lru_cache

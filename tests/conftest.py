@@ -32,11 +32,13 @@ class FakeCompletion:
         self.error_cls = litellm.exceptions.ServiceUnavailableError
         self.fail_mid_stream: set[str] = set()
         self.calls: list[str] = []
+        self.last_messages: list[dict] | None = None
 
     def __call__(self, **kwargs):
         model = kwargs["model"]
         provider = model.split("/", 1)[0]
         self.calls.append(provider)
+        self.last_messages = kwargs["messages"]
         if provider in self.failing:
             raise self.error_cls(message="proveedor caído", llm_provider=provider, model=model)
         kwargs.pop("api_key")

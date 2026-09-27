@@ -1,0 +1,6 @@
+{
+  "description": "Portal interno para que los 400 empleados de la empresa reserven salas de reuniones y puestos de trabajo flexibles. Login con la cuenta corporativa de Microsoft, vista de planos por planta, reservas recurrentes, check-in con QR en el puesto y un panel de ocupación para el equipo de facilities con exportación a Excel.",
+  "project_type": "internal_tool",
+  "detail_level": "medium",
+  "output_format": "phases_table"
+}

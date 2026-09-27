@@ -1,9 +1,10 @@
-"""Router de estimaciones: expone el endpoint que genera una estimación de
-software a partir de la transcripción de una reunión (arquitectura CAG).
+"""Router de estimaciones: genera una estimación de software a partir de la
+descripción de un proyecto y de las opciones del formulario del cliente.
 
-Los endpoints delegan en el wrapper de proveedores (LLMGateway) y trabajan
-solo con su respuesta normalizada: no saben qué proveedor ha respondido ni
-si la respuesta viene de caché.
+Flujo: EstimationRequest -> render_estimation_prompt() -> (system, user)
+-> wrapper de proveedores (LLMGateway) -> EstimationResponse. Los endpoints
+trabajan solo con la respuesta normalizada del wrapper: no saben qué
+proveedor ha respondido ni si la respuesta viene de caché.
 """
 
 import json
@@ -12,11 +13,11 @@ from collections.abc import Iterator
 import structlog
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import settings
+from app.prompts.loader import render_estimation_prompt
+from app.schemas import EstimationRequest, EstimationResponse
 from app.services.llm_gateway import LLMGateway, ProviderError, get_llm_gateway
-from app.services.llm_service import build_system_prompt
 
 log = structlog.get_logger(__name__)
 
@@ -27,31 +28,6 @@ class InvalidEstimationError(Exception):
     """El modelo respondió, pero la respuesta no es una estimación válida."""
 
 
-class EstimationRequest(BaseModel):
-    # Se recortan espacios/saltos de línea al principio y al final: no
-    # cambian el significado y, al pegar texto, suelen variar entre envíos,
-    # lo que haría fallar la caché exact-match con la misma transcripción.
-    model_config = ConfigDict(str_strip_whitespace=True)
-
-    transcription: str = Field(
-        ...,
-        min_length=1,
-        max_length=settings.max_transcription_chars,
-        description="Transcripción (o resumen) de la reunión con el cliente.",
-    )
-
-
-class EstimationResponse(BaseModel):
-    estimation: str = Field(..., description="Estimación generada por el modelo.")
-    model: str = Field(..., description="Modelo LLM que generó la estimación.")
-    provider: str = Field(..., description="Proveedor LLM que respondió.")
-    cached: bool = Field(..., description="True si la respuesta viene de la caché.")
-    cost_usd: float | None = Field(None, description="Coste estimado de la llamada (USD).")
-    finish_reason: str | None = Field(
-        None, description='"stop" si el modelo terminó; "length" si se truncó.'
-    )
-
-
 def _parse_estimation(text: str) -> str:
     """Normaliza y valida la estimación devuelta por el modelo."""
     estimation = text.strip()
@@ -60,26 +36,34 @@ def _parse_estimation(text: str) -> str:
     return estimation
 
 
+def _render_prompt(request: EstimationRequest, *, stream: bool) -> tuple[str, str]:
+    # prompt_version y las opciones del formulario quedan enlazadas al
+    # contexto de logs: aparecen también en los eventos llm.* del wrapper.
+    # Nunca se registra el texto de la descripción, solo su tamaño.
+    structlog.contextvars.bind_contextvars(prompt_version=settings.prompt_version)
+    log.info(
+        "estimation.requested",
+        stream=stream,
+        chars=len(request.description),
+        project_type=request.project_type.value,
+        detail_level=request.detail_level.value,
+        output_format=request.output_format.value,
+    )
+    return render_estimation_prompt(request, version=settings.prompt_version)
+
+
 @router.post("", response_model=EstimationResponse)
 def create_estimation(
     request: EstimationRequest,
     gateway: LLMGateway = Depends(get_llm_gateway),
 ) -> EstimationResponse:
-    # Nunca se registra el contenido de la transcripción, solo su tamaño.
-    log.info("estimation.requested", stream=False, chars=len(request.transcription))
+    system, user = _render_prompt(request, stream=False)
 
-    result = gateway.complete(build_system_prompt(), request.transcription)
-    estimation = _parse_estimation(result.text)
+    result = gateway.complete(system, user)
+    text = _parse_estimation(result.text)
 
-    log.info("estimation.generated", cached=result.cached, chars=len(estimation))
-    return EstimationResponse(
-        estimation=estimation,
-        model=result.model,
-        provider=result.provider,
-        cached=result.cached,
-        cost_usd=result.cost_usd,
-        finish_reason=result.finish_reason,
-    )
+    log.info("estimation.generated", cached=result.cached, chars=len(text))
+    return EstimationResponse(text=text, prompt_version=settings.prompt_version)
 
 
 def _sse_event(event: str, data: dict) -> str:
@@ -93,16 +77,15 @@ def create_estimation_stream(
 ) -> StreamingResponse:
     """Misma generación que create_estimation, pero en streaming (SSE):
     emite un evento `delta` por cada fragmento de texto recibido del LLM y,
-    al terminar, un evento `done` con las métricas de la llamada (modelo,
-    tokens, tiempo de respuesta). Si el proveedor falla a mitad de la
-    respuesta se emite un evento `error` en lugar de `done`.
+    al terminar, un evento `done` con prompt_version y las métricas de la
+    llamada. Si el proveedor falla a mitad de la respuesta se emite un
+    evento `error` en lugar de `done`.
 
     La conexión con el proveedor (y el fallback) ocurre antes de devolver
     la respuesta, así que si todos fallan el cliente recibe un 503 normal.
     """
-    log.info("estimation.requested", stream=True, chars=len(request.transcription))
-
-    llm_stream = gateway.stream(build_system_prompt(), request.transcription)
+    system, user = _render_prompt(request, stream=True)
+    llm_stream = gateway.stream(system, user)
 
     def event_stream() -> Iterator[str]:
         try:
@@ -121,6 +104,7 @@ def create_estimation_stream(
         yield _sse_event(
             "done",
             {
+                "prompt_version": settings.prompt_version,
                 "provider": result.provider,
                 "model": result.model,
                 "input_tokens": result.input_tokens,
