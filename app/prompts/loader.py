@@ -35,6 +35,9 @@ _env = Environment(
     # "<" de la descripción en entidades HTML y cambiaría lo que ve el modelo.
     autoescape=False,
 )
+# `tojson` (ejemplos few-shot): JSON legible, con acentos tal cual y en el
+# orden de los campos del contrato, no ordenado alfabéticamente.
+_env.policies["json.dumps_kwargs"] = {"ensure_ascii": False, "indent": 2}
 
 
 class PromptVersionNotFoundError(LookupError):

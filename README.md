@@ -4,7 +4,10 @@ Servicio IA en FastAPI que genera estimaciones de esfuerzo de proyectos de
 software a partir de su descripción, con un cliente web en Streamlit. Los
 prompts son templates Jinja2 versionados con ejemplos few-shot, y las
 llamadas al LLM pasan por un wrapper de proveedores (OpenAI / Anthropic)
-con fallback, caché y logging estructurado.
+con fallback, caché y logging estructurado. La respuesta del modelo es una
+**salida estructurada**: una instancia de un modelo Pydantic validada con
+[Instructor](https://python.useinstructor.com/), nunca texto libre que haya
+que interpretar.
 
 ## Estructura del proyecto
 
@@ -17,32 +20,37 @@ estimador-cag/
 │   ├── __init__.py
 │   ├── main.py                   # App FastAPI: middleware request_id, errores, lifespan
 │   ├── config.py                 # Configuración (pydantic-settings, claves como SecretStr)
-│   ├── schemas.py                # Contrato cliente-servicio (Pydantic v2)
+│   ├── schemas.py                # Contrato cliente-servicio y con el LLM (Pydantic v2)
 │   ├── logging_config.py         # Logging estructurado con structlog
 │   ├── prompts/
 │   │   ├── loader.py             # render_estimation_prompt(request, version) -> (system, user)
 │   │   └── estimation/
-│   │       └── v1/
-│   │           ├── system.j2     # Rol, instrucciones, formato y nivel de detalle
-│   │           ├── user.j2       # Envuelve la descripción en <project_description>
-│   │           └── examples.j2   # Ejemplos few-shot (se renderizan en el formato pedido)
+│   │       ├── v1/
+│   │       │   ├── system.j2     # Rol, criterio de estimación y pistas de contenido
+│   │       │   ├── user.j2       # Envuelve la descripción en <project_description>
+│   │       │   └── examples.j2   # Ejemplos few-shot (instancias de EstimationResult en JSON)
+│   │       └── v2/               # Igual que v1 salvo el set de ejemplos
 │   ├── routers/
-│   │   └── estimations.py        # POST /api/v1/estimate (+ /estimate/stream, SSE)
+│   │   └── estimations.py        # POST /api/v1/estimate
 │   └── services/
-│       ├── llm_gateway.py        # Wrapper de proveedores (LiteLLM): fallback, caché, logging
+│       ├── llm_gateway.py        # Wrapper de proveedores (LiteLLM + Instructor): fallback, caché, logging
 │       └── cache.py              # Caché exact-match en memoria (TTL + LRU)
 ├── tests/
 │   ├── prompts/
-│   │   └── test_estimation_v1.py # Tests del template (sin llamar a ningún modelo)
+│   │   ├── test_estimation_v1.py # Tests de los templates (sin llamar a ningún modelo)
+│   │   └── test_estimation_v2.py
 │   ├── test_api.py
+│   ├── test_estimation_view.py
 │   ├── test_llm_gateway.py
-│   └── test_llm_logging.py
+│   ├── test_llm_logging.py
+│   └── test_schemas.py           # Contrato EstimationResult y sus validadores
 ├── .env.example
 ├── Dockerfile                     # Imagen única (Python 3.12 + uv) para API y cliente
 ├── docker-compose.yml             # Servicios "api" (uvicorn) y "chat" (Streamlit)
 ├── ejemplo_peticion.json          # Petición de ejemplo para probar el endpoint
 ├── pyproject.toml
 ├── streamlit_app.py               # Cliente Streamlit (formulario), cliente HTTP de la API
+├── estimation_view.py             # Presentación en el cliente: tabla, lista o narrativa
 └── README.md
 ```
 
@@ -83,8 +91,33 @@ por el cliente Streamlit para validar el formulario antes de enviarlo.
 | `detail_level` | `DetailLevel` | `summary`, `medium`, `detailed` |
 | `output_format` | `OutputFormat` | `phases_table`, `line_items`, `narrative` |
 
-**`EstimationResponse`**: `text` (la estimación, texto libre) y
+**`EstimationResponse`**: `result` (un `EstimationResult`) y
 `prompt_version` (versión del prompt usada, p. ej. `v1`).
+
+**`EstimationResult`**: la estimación estructurada. Es a la vez el contrato
+con el LLM (Instructor envía su JSON Schema al proveedor), la documentación
+OpenAPI del endpoint (`/docs`) y el tipo que circula por el código: el
+shape no se repite a mano en ningún otro sitio, tampoco en los prompts.
+
+| Campo | Tipo | Restricciones |
+|---|---|---|
+| `summary` | `str` | |
+| `total_hours` | `int` | ≥ 1; igual a la suma de `hours` de las fases |
+| `total_duration_weeks` | `int` | ≥ 1; suma de `duration_weeks` de las fases (±1 semana) |
+| `total_cost_eur` | `int` | ≥ 0; suma de `cost_eur` de las fases (±5 %) |
+| `confidence_pct` | `int` | 0 a 100 |
+| `phases` | `list[Phase]` | al menos una |
+
+Cada `Phase`: `name`, `hours` (≥ 1), `duration_weeks` (1 a 52), `cost_eur`
+(≥ 0), `confidence_pct` (0 a 100) y `assumptions` (`list[str]`). Las fases
+son consecutivas, por eso la duración total es su suma. Los mensajes de
+error de los validadores están en inglés a propósito: Instructor se los
+reenvía al modelo en los reintentos.
+
+El servicio devuelve siempre esta forma, nunca la presentación:
+`output_format` y `detail_level` son solo pistas de contenido para el
+modelo (extensión del `summary`, cantidad de asunciones). Cómo se pinta
+(tabla, lista, narrativa, PDF...) lo decide el cliente.
 
 ## Prompts versionados (Jinja2)
 
@@ -95,16 +128,19 @@ Los prompts viven en `app/prompts/<nombre>/<versión>/` y se renderizan con
 system, user = render_estimation_prompt(request, version="v1")
 ```
 
-- **`system.j2`**: rol del modelo, instrucciones generales (con una pauta
-  específica por `project_type`), un bloque condicional por `output_format`
-  (cómo formatear la salida) y otro por `detail_level` (qué nivel de
-  detalle dar). Incluye `examples.j2` con `{% include %}`.
+- **`system.j2`**: rol del modelo, criterio de estimación (con una pauta
+  específica por `project_type`) y pistas de contenido según
+  `detail_level` y `output_format`. No describe la estructura de la
+  respuesta (eso lo hace el schema). Incluye `examples.j2` con
+  `{% include %}`.
 - **`user.j2`**: envuelve la descripción del proyecto en
   `<project_description>...</project_description>`.
-- **`examples.j2`**: dos ejemplos few-shot (una app móvil y un pipeline de
-  datos). Sus datos se definen una sola vez y se renderizan en el mismo
-  formato y nivel de detalle que se piden al modelo, para que los ejemplos
-  nunca contradigan las instrucciones.
+- **`examples.j2`**: dos ejemplos few-shot, renderizados como instancias
+  de `EstimationResult` en JSON. Coste (horas × tarifa) y totales se
+  calculan en el template, y el nivel de detalle recorta el resumen y las
+  asunciones como piden las instrucciones. Un test valida cada ejemplo
+  contra `EstimationResult`, así que nunca enseñan al modelo una respuesta
+  que el contrato rechazaría.
 
 El entorno de Jinja2 usa `StrictUndefined` (una variable que falte es un
 error, no un hueco vacío en el prompt), `trim_blocks` y `lstrip_blocks`.
@@ -118,7 +154,7 @@ error, no un hueco vacío en el prompt), `trim_blocks` y `lstrip_blocks`.
 
 La versión por defecto es `PROMPT_VERSION` (en `.env`; la API comprueba al
 arrancar que existe). Cada petición puede elegir otra con el query param
-`?prompt_version=v2` (en `/estimate` y en `/estimate/stream`), útil para
+`?prompt_version=v2` en `/estimate`, útil para
 comparar versiones con la misma entrada. Una versión inexistente o con
 formato no válido devuelve `422` sin llamar al modelo.
 
@@ -137,8 +173,43 @@ Los endpoints no hablan con OpenAI ni con Anthropic: llaman a
 `LLMGateway` (`app/services/llm_gateway.py`) con el system prompt y el
 mensaje de usuario, que viajan como mensajes separados (`role: "system"` y
 `role: "user"`). El wrapper se encarga de todo lo relacionado con
-proveedores y devuelve siempre una respuesta normalizada (`LLMResponse`:
-texto, proveedor, modelo, tokens, latencia, coste, `finish_reason`, `cached`).
+proveedores:
+
+- `complete(system, user)` devuelve una respuesta normalizada
+  (`LLMResponse`: texto, proveedor, modelo, tokens, latencia, coste,
+  `finish_reason`, `cached`).
+- `complete_structured(system, user, EstimationResult)` devuelve
+  directamente una instancia validada del modelo Pydantic. Es lo que usa
+  `/estimate`.
+
+### Salida estructurada (Instructor)
+
+```python
+result: EstimationResult = gateway.complete_structured(system, user, EstimationResult)
+```
+
+[Instructor](https://python.useinstructor.com/) se integra **dentro** del
+wrapper (`instructor.from_litellm(..., mode=Mode.TOOLS)`), así que la
+salida estructurada hereda el fallback, los reintentos, la caché y los
+logs:
+
+- **Cómo se envía el schema**: como una herramienta cuyo `parameters` es el
+  JSON Schema de `EstimationResult`, con `tool_choice` forzado. LiteLLM lo
+  traduce al *tool use* de Anthropic o al *function calling* de OpenAI, así
+  que schemas y prompts no dependen del proveedor.
+- **Reintentos de validación**: si la respuesta no valida (JSON mal formado,
+  un campo fuera de rango, totales que no cuadran), Instructor reenvía al
+  modelo su respuesta junto con los errores, hasta `LLM_VALIDATION_RETRIES`
+  veces (2 por defecto). Si sigue sin validar, el wrapper eleva
+  `InvalidStructuredOutputError` y la API responde `502` (y registra
+  `llm.validation_failed` y `estimation.invalid`). Nunca llega al cliente
+  una estimación a medias. No se rota de proveedor: el proveedor funciona,
+  es la respuesta la que no cumple el contrato.
+- **Errores del proveedor**: Instructor los envuelve en su propia
+  excepción. El wrapper los desenvuelve para que sigan los reintentos de
+  transporte (`LLM_MAX_RETRIES`) y el fallback de siempre.
+- **Proveedor y modelo**: `LLM_PROVIDER`, `OPENAI_MODEL` y `ANTHROPIC_MODEL`.
+  Cambiar de proveedor es una línea de configuración.
 
 ```
 endpoint ──► LLMGateway ──► caché exact-match ──(hit)──► respuesta
@@ -153,15 +224,15 @@ endpoint ──► LLMGateway ──► caché exact-match ──(hit)──► 
   reproducibles).
 - **Fallback**: se prueba primero `LLM_PROVIDER` y, si falla, el siguiente
   proveedor con API key. Se desactiva con `LLM_FALLBACK_ENABLED=false`. En
-  streaming solo se rota **antes** del primer fragmento: una vez enviado
-  texto al cliente no se puede cambiar de proveedor sin mezclar respuestas,
-  así que se emite un evento SSE `error`.
+  streaming (`LLMGateway.stream`, sin uso en los endpoints actuales) solo se
+  rota **antes** del primer fragmento.
 - **Reintentos**: los errores transitorios (timeout, rate limit, 5xx,
   conexión) se reintentan `LLM_MAX_RETRIES` veces sobre el mismo proveedor
   con backoff exponencial antes de rotar; los de autenticación o petición
   inválida pasan directamente al siguiente proveedor.
 - **Caché exact-match**: la misma petición (system + user + parámetros +
-  modelos) se sirve de memoria sin llamar al proveedor. Como el prompt
+  modelos + schema pedido) se sirve de memoria sin llamar al proveedor. En
+  las llamadas estructuradas se guarda la instancia ya validada. Como el prompt
   depende de las opciones del formulario, cambiar el tipo, el nivel de
   detalle o el formato es otra entrada de caché. Clave SHA-256, TTL
   (`LLM_CACHE_TTL_SECONDS`) y tamaño máximo (`LLM_CACHE_MAX_ENTRIES`). Solo
@@ -181,6 +252,7 @@ endpoint ──► LLMGateway ──► caché exact-match ──(hit)──► 
 | `llm.call_completed` | Al completar | `provider`, `model`, `input_tokens`, `output_tokens`, `latency_ms` (total, incluidos reintentos), `cost_usd`, `finish_reason` (`stop` / `length` = truncada), `cache_hit`, `fallback_used`, `fallback_provider`, `attempts` |
 | `llm.response_truncated` | Si `finish_reason=length` | `provider`, `model`, `output_tokens` |
 | `llm.call_failed` | Si fallan todos | `providers`, `attempts`, `latency_ms` |
+| `llm.validation_failed` | La salida estructurada no valida tras los reintentos | `provider`, `model`, `response_model`, `validation_attempts`, `error_type`, `errors` (solo ubicación y tipo de cada error, nunca valores) |
 | `llm.stream_interrupted` | Fallo a mitad de streaming | `provider`, `error_category`, `chars_sent`, ... |
 
 Además, `estimation.requested` registra las opciones del formulario
@@ -262,7 +334,8 @@ uv run uvicorn app.main:app --reload
      -ContentType "application/json; charset=utf-8" -Body $body
 
    $response.prompt_version
-   $response.text
+   $response.result.phases | Format-Table name, hours, duration_weeks, cost_eur, confidence_pct
+   $response.result.summary
    ```
 
 7. Para parar el servidor: vuelve a la ventana del paso 5 y pulsa `Ctrl+C`.
@@ -318,23 +391,41 @@ Respuesta esperada (`200`):
 
 ```json
 {
-  "text": "| Fase | Tareas | Horas | confidence_pct |\n|---|---|---|---|\n...",
+  "result": {
+    "summary": "Portal de reservas con SSO y panel de ocupación: unas 260 horas en 8 semanas...",
+    "total_hours": 260,
+    "total_duration_weeks": 8,
+    "total_cost_eur": 14300,
+    "confidence_pct": 75,
+    "phases": [
+      {
+        "name": "Análisis y diseño",
+        "hours": 40,
+        "duration_weeks": 2,
+        "cost_eur": 2200,
+        "confidence_pct": 85,
+        "assumptions": ["las salas y puestos ya están inventariados"]
+      }
+    ]
+  },
   "prompt_version": "v1"
 }
 ```
+
+(Ejemplo recortado a una fase; los totales de una respuesta real cuadran
+con la suma de sus fases.)
 
 Para usar otra versión del prompt: `POST /api/v1/estimate?prompt_version=v2`.
 
 Errores: `422` si la petición no cumple el contrato (descripción de menos
 de 20 o más de 2000 caracteres, un valor fuera de los enums o una
 `prompt_version` que no existe), `503` con
-cabecera `Retry-After` si fallan todos los proveedores y `502` si el modelo
-devuelve una respuesta vacía.
+cabecera `Retry-After` si fallan todos los proveedores y `502` si la
+respuesta del modelo no cumple `EstimationResult` ni tras los reintentos de
+validación.
 
-`POST /api/v1/estimate/stream` acepta el mismo body y devuelve la
-estimación en streaming (SSE): eventos `delta` con el texto, y al final un
-evento `done` con `prompt_version`, proveedor, modelo, tokens, latencia,
-coste, `finish_reason` y `cached` (o `error` si el proveedor se interrumpe).
+> El antiguo `POST /api/v1/estimate/stream` (SSE con texto) se ha eliminado:
+> con salida estructurada un JSON a medias no se puede mostrar ni validar.
 
 ## Cliente Streamlit (formulario)
 
@@ -347,8 +438,10 @@ detalle y formato de salida). Al pulsar **Enviar**:
    llegar a llamar a la API.
 2. Hace `POST /api/v1/estimate` con ese JSON al servicio IA en
    `API_BASE_URL`.
-3. Muestra el texto de la respuesta (renderizado como Markdown) junto con
-   las opciones elegidas y la versión del prompt.
+3. Muestra los totales (horas, semanas, coste y confianza) y pinta
+   `result` según el formato elegido: tabla por fases, lista de partidas o
+   texto narrativo ([`estimation_view.py`](estimation_view.py)). Añadir un
+   formato nuevo es añadir una función ahí, sin tocar el servicio IA.
 
 Es un cliente HTTP puro: no importa la configuración ni las API keys del
 servicio, y hereda el fallback, la caché y el logging del wrapper. Necesita
@@ -380,17 +473,27 @@ uv run pytest
 
 - `tests/prompts/test_estimation_v1.py` y `test_estimation_v2.py`: tests de los templates, sin llamar a
   ningún modelo (milisegundos). Comprueban que la descripción aparece
-  literal dentro de `<project_description>`, que `phases_table` pide
-  `confidence_pct` y `narrative` no, que `detailed` pide las asunciones por
-  fase y `summary` no, y que el loader rechaza versiones inexistentes,
-  variables sin definir e intentos de cerrar el bloque de la descripción.
-- `tests/test_api.py`: contrato del endpoint, mensajes `system`/`user`
-  separados, validación (422) y errores genéricos.
+  literal dentro de `<project_description>`, que `output_format` es solo
+  una pista (no cambia los ejemplos), que `detailed` pide las asunciones
+  por fase y `summary` no, que cada ejemplo few-shot es un
+  `EstimationResult` válido, y que el loader rechaza versiones
+  inexistentes, variables sin definir e intentos de cerrar el bloque de la
+  descripción.
+- `tests/test_schemas.py`: el contrato `EstimationResult` (totales de
+  horas, duración ±1 semana y coste ±5 %, coste total 0 sin
+  `ZeroDivisionError`, restricciones de campos y JSON Schema).
+- `tests/test_api.py`: el endpoint devuelve un `EstimationResponse`, envía
+  el schema como herramienta forzada, reenvía los errores de validación al
+  modelo, responde 502 al agotar los reintentos (también con el cliente de
+  Instructor mockeado) y mantiene la validación (422) y el 503.
 - `tests/test_llm_gateway.py` y `tests/test_llm_logging.py`: orden de
-  proveedores, fallback, reintentos, caché y qué se registra.
+  proveedores, fallback, reintentos, caché (texto y estructurada) y qué se
+  registra.
+- `tests/test_estimation_view.py`: presentación en el cliente (tabla,
+  lista, narrativa) y la app Streamlit renderizando una estimación.
 
-Los proveedores se simulan con `mock_response` de LiteLLM: no hacen falta
-API keys ni se consume saldo.
+Los proveedores se simulan con `mock_response` / `mock_tool_calls` de
+LiteLLM: no hacen falta API keys ni se consume saldo.
 
 ## CI
 

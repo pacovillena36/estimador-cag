@@ -7,6 +7,7 @@ import itertools
 import pytest
 
 from app.prompts.loader import render_estimation_prompt, validate_estimation_prompt_version
+from tests.prompts.test_estimation_v1 import examples_json
 from app.schemas import DetailLevel, EstimationRequest, OutputFormat, ProjectType
 
 DESCRIPTION = (
@@ -59,29 +60,12 @@ def test_v2_uses_a_different_set_of_examples():
     assert "SAP" in v2_examples
 
 
-def test_v2_examples_follow_the_requested_format():
-    narrative, _ = render_estimation_prompt(
-        make_request(output_format=OutputFormat.NARRATIVE), version="v2"
-    )
-    line_items, _ = render_estimation_prompt(
-        make_request(output_format=OutputFormat.LINE_ITEMS), version="v2"
-    )
-    table, _ = render_estimation_prompt(
-        make_request(output_format=OutputFormat.PHASES_TABLE), version="v2"
-    )
-
-    assert "|---" in table and "confidence_pct" in table
-    assert "|---" not in narrative and "confidence_pct" not in narrative
-    assert "**Total:" in line_items
-
-
-def test_v2_example_totals_are_the_sum_of_tasks():
-    system, _ = render_estimation_prompt(
-        make_request(output_format=OutputFormat.LINE_ITEMS), version="v2"
-    )
-    # Ejemplo 1 (SaaS): 50 + 84 + 128 + 56 + 54; ejemplo 2 (interna): 32 + 92 + 72 + 16 + 44.
-    assert "**Total: 372 h**" in system
-    assert "**Total: 256 h**" in system
+def test_v2_example_totals_are_the_sum_of_phases():
+    system, _ = render_estimation_prompt(make_request(), version="v2")
+    saas, internal = examples_json(system)
+    # SaaS: 50 + 84 + 128 + 56 + 54 h a 55 €/h; interna: 32 + 92 + 72 + 16 + 44 h a 60 €/h.
+    assert (saas["total_hours"], saas["total_cost_eur"]) == (372, 372 * 55)
+    assert (internal["total_hours"], internal["total_cost_eur"]) == (256, 256 * 60)
 
 
 def test_all_option_combinations_render_in_v2():

@@ -12,6 +12,12 @@ Responsabilidades (y lo único que sabe de proveedores la aplicación):
   enviado texto al cliente no se puede cambiar de proveedor.
 - Caché exact-match: misma petición (prompt + parámetros) -> misma respuesta,
   sin volver a llamar al proveedor.
+- Salida estructurada (`complete_structured`): Instructor envía al proveedor
+  el JSON Schema de un modelo Pydantic (tool use forzado; LiteLLM lo traduce
+  para cada proveedor) y devuelve una instancia validada. Si no valida,
+  reenvía los errores al modelo hasta `validation_retries` veces y, si sigue
+  sin validar, eleva InvalidStructuredOutputError (no se rota de proveedor:
+  el proveedor funciona, es la respuesta la que no cumple el contrato).
 - Logging estructurado de cada llamada (ver "Eventos de log" más abajo).
   Nunca se registran transcripciones, respuestas ni claves.
 
@@ -30,6 +36,9 @@ Eventos de log (uno de inicio y uno de cierre por llamada, más los fallos):
                       latency_ms, cost_usd, finish_reason, cache_hit,
                       fallback_used, fallback_provider, attempts
 - llm.call_failed     todos los proveedores fallaron (attempts, latency_ms)
+- llm.validation_failed  la salida estructurada no validó tras los
+                      reintentos (provider, model, response_model,
+                      validation_attempts, error_type, errors)
 """
 
 import hashlib
@@ -46,10 +55,12 @@ from typing import Any, NoReturn, TypeVar
 # no controlada en cada arranque). Debe fijarse antes de importar litellm.
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
+import instructor  # noqa: E402
 import litellm  # noqa: E402
 import openai  # noqa: E402
 import structlog  # noqa: E402
-from pydantic import SecretStr  # noqa: E402
+from instructor.core.exceptions import InstructorRetryException  # noqa: E402
+from pydantic import BaseModel, SecretStr, ValidationError  # noqa: E402
 
 from app.config import Settings, get_settings  # noqa: E402
 from app.services.cache import TTLCache  # noqa: E402
@@ -68,6 +79,7 @@ ProviderError = openai.APIError
 RETRYABLE_ERRORS = frozenset({"timeout", "rate_limit", "server_error", "connection"})
 
 T = TypeVar("T")
+M = TypeVar("M", bound=BaseModel)
 
 
 class LLMGatewayError(Exception):
@@ -80,6 +92,11 @@ class NoProvidersConfiguredError(LLMGatewayError):
 
 class AllProvidersFailedError(LLMGatewayError):
     """Todos los proveedores de la cadena de fallback han fallado."""
+
+
+class InvalidStructuredOutputError(LLMGatewayError):
+    """El modelo respondió, pero su salida no cumple el schema pedido ni
+    tras los reintentos de validación."""
 
 
 @dataclass(frozen=True)
@@ -106,6 +123,8 @@ class LLMResponse:
     cost_usd: float | None = None
     finish_reason: str | None = None  # "stop" = completa, "length" = truncada
     cached: bool = False
+    # Solo en complete_structured: la instancia validada (`text` es su JSON).
+    parsed: BaseModel | None = None
 
 
 class LLMStream:
@@ -196,6 +215,8 @@ class LLMGateway:
         max_tokens: int,
         cache: TTLCache[LLMResponse] | None = None,
         retry_backoff_seconds: float = 0.5,
+        validation_retries: int = 2,
+        structured_client: instructor.Instructor | None = None,
     ) -> None:
         if not providers:
             raise NoProvidersConfiguredError(
@@ -208,6 +229,12 @@ class LLMGateway:
         self._max_tokens = max_tokens
         self._cache = cache
         self._retry_backoff = retry_backoff_seconds
+        self._validation_retries = validation_retries
+        # El lambda resuelve litellm.completion en cada llamada (no al crear
+        # el cliente), así los tests pueden sustituirlo con monkeypatch.
+        self._structured = structured_client or instructor.from_litellm(
+            lambda **kwargs: litellm.completion(**kwargs), mode=instructor.Mode.TOOLS
+        )
 
     @property
     def provider_names(self) -> list[str]:
@@ -217,40 +244,26 @@ class LLMGateway:
 
     def complete(self, system_prompt: str, user_message: str) -> LLMResponse:
         messages = self._messages(system_prompt, user_message)
-        cache_key = self._cache_key(messages)
-        ctx = _CallContext(primary=self._providers[0], start=time.perf_counter())
 
-        cached = self._cache_get(cache_key)
-        self._log_started(ctx, messages, cache_hit=cached is not None)
-        if cached:
-            return self._serve_cached(ctx, cached)
+        def call(provider: ProviderConfig) -> tuple[Any, None]:
+            return litellm.completion(**self._request_kwargs(provider, messages)), None
 
-        for index, provider in enumerate(self._providers):
-            self._log_fallback(index, provider)
-            raw = self._call_with_retries(
-                ctx,
-                provider,
-                has_fallback=index < len(self._providers) - 1,
-                call=lambda p=provider: litellm.completion(**self._request_kwargs(p, messages)),
-            )
-            if raw is None:
-                continue
+        return self._complete(messages, self._cache_key(messages), call)
 
-            choice = raw.choices[0]
-            response = self._build_response(
-                ctx,
-                provider,
-                text=choice.message.content or "",
-                model=raw.model or provider.model,
-                input_tokens=getattr(raw.usage, "prompt_tokens", None),
-                output_tokens=getattr(raw.usage, "completion_tokens", None),
-                finish_reason=choice.finish_reason,
-            )
-            self._log_completed(ctx, response)
-            self._cache_set(cache_key, response)
-            return response
+    def complete_structured(
+        self, system_prompt: str, user_message: str, response_model: type[M]
+    ) -> M:
+        """Como `complete`, pero el modelo responde con una instancia
+        validada de `response_model` (vía Instructor) en lugar de texto,
+        con el mismo fallback, reintentos de transporte, caché y logs."""
+        messages = self._messages(system_prompt, user_message)
+        cache_key = self._cache_key(messages, response_model=response_model)
 
-        self._raise_all_failed(ctx)
+        def call(provider: ProviderConfig) -> tuple[Any, M]:
+            return self._call_structured(provider, messages, response_model)
+
+        response = self._complete(messages, cache_key, call)
+        return response.parsed  # type: ignore[return-value]
 
     def stream(self, system_prompt: str, user_message: str) -> LLMStream:
         """Abre el stream de forma inmediata (no perezosa): conecta con el
@@ -297,6 +310,72 @@ class LLMGateway:
         self._raise_all_failed(ctx)
 
     # ------------------------------------------------------------ internals
+
+    def _complete(
+        self,
+        messages: list[dict],
+        cache_key: str,
+        call: Callable[[ProviderConfig], tuple[Any, BaseModel | None]],
+    ) -> LLMResponse:
+        """Bucle común de complete/complete_structured: caché, fallback y
+        reintentos. `call` devuelve (respuesta cruda de LiteLLM, instancia
+        validada o None si la llamada es de texto)."""
+        ctx = _CallContext(primary=self._providers[0], start=time.perf_counter())
+
+        cached = self._cache_get(cache_key)
+        self._log_started(ctx, messages, cache_hit=cached is not None)
+        if cached:
+            return self._serve_cached(ctx, cached)
+
+        for index, provider in enumerate(self._providers):
+            self._log_fallback(index, provider)
+            result = self._call_with_retries(
+                ctx,
+                provider,
+                has_fallback=index < len(self._providers) - 1,
+                call=lambda p=provider: call(p),
+            )
+            if result is None:
+                continue
+
+            raw, parsed = result
+            choice = raw.choices[0]
+            usage = getattr(raw, "usage", None)
+            response = self._build_response(
+                ctx,
+                provider,
+                text=parsed.model_dump_json() if parsed else choice.message.content or "",
+                model=raw.model or provider.model,
+                input_tokens=getattr(usage, "prompt_tokens", None),
+                output_tokens=getattr(usage, "completion_tokens", None),
+                finish_reason=choice.finish_reason,
+            )
+            response = replace(response, parsed=parsed)
+            self._log_completed(ctx, response)
+            self._cache_set(cache_key, response)
+            return response
+
+        self._raise_all_failed(ctx)
+
+    def _call_structured(
+        self, provider: ProviderConfig, messages: list[dict], response_model: type[M]
+    ) -> tuple[Any, M]:
+        try:
+            parsed, raw = self._structured.create_with_completion(
+                response_model=response_model,
+                max_retries=self._validation_retries,
+                **self._request_kwargs(provider, messages),
+            )
+        except InstructorRetryException as exc:
+            # Instructor también envuelve los errores del proveedor: esos se
+            # elevan tal cual para que _call_with_retries reintente o rote.
+            if isinstance(exc.__cause__, ProviderError):
+                raise exc.__cause__ from None
+            self._log_validation_failed(provider, response_model, exc)
+            raise InvalidStructuredOutputError(
+                f"La respuesta de {provider.name} no cumple {response_model.__name__}"
+            ) from exc
+        return raw, parsed
 
     def _call_with_retries(
         self,
@@ -449,15 +528,21 @@ class LLMGateway:
             {"role": "user", "content": user_message},
         ]
 
-    def _cache_key(self, messages: list[dict]) -> str:
+    def _cache_key(
+        self, messages: list[dict], response_model: type[BaseModel] | None = None
+    ) -> str:
         # Exact-match sobre todo lo que determina la respuesta: mensajes,
-        # parámetros de generación y cadena de modelos. Se guarda solo el
-        # hash SHA-256, nunca el texto de la transcripción como clave.
+        # parámetros de generación, cadena de modelos y, en las llamadas
+        # estructuradas, el schema pedido. Se guarda solo el hash SHA-256,
+        # nunca el texto de la transcripción como clave.
         payload = json.dumps(
             {
                 "messages": messages,
                 "max_tokens": self._max_tokens,
                 "models": [p.model for p in self._providers],
+                "response_schema": (
+                    response_model.model_json_schema() if response_model else None
+                ),
             },
             sort_keys=True,
             ensure_ascii=False,
@@ -564,6 +649,30 @@ class LLMGateway:
                 output_tokens=response.output_tokens,
             )
 
+    @staticmethod
+    def _log_validation_failed(
+        provider: ProviderConfig,
+        response_model: type[BaseModel],
+        exc: InstructorRetryException,
+    ) -> None:
+        # Solo la ubicación y el tipo de cada error, nunca los valores: la
+        # salida del modelo puede citar la descripción del proyecto.
+        cause = exc.__cause__
+        errors = (
+            [f"{'.'.join(map(str, e['loc'])) or '<root>'}: {e['type']}" for e in cause.errors()]
+            if isinstance(cause, ValidationError)
+            else []
+        )
+        log.warning(
+            "llm.validation_failed",
+            provider=provider.name,
+            model=provider.model,
+            response_model=response_model.__name__,
+            validation_attempts=exc.n_attempts,
+            error_type=type(cause).__name__ if cause else None,
+            errors=errors,
+        )
+
     def _raise_all_failed(self, ctx: _CallContext) -> NoReturn:
         log.error(
             "llm.call_failed",
@@ -592,4 +701,5 @@ def get_llm_gateway() -> LLMGateway:
         max_retries=settings.llm_max_retries,
         max_tokens=settings.llm_max_tokens,
         cache=cache,
+        validation_retries=settings.llm_validation_retries,
     )

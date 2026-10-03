@@ -1,7 +1,10 @@
 """Fixtures comunes: un gateway con proveedores ficticios y un doble de
 `litellm.completion` que usa las respuestas simuladas de LiteLLM
 (`mock_response`), de modo que los tests nunca llaman a un proveedor real
-pero sí ejercitan el parseo real de respuestas de LiteLLM."""
+pero sí ejercitan el parseo real de respuestas de LiteLLM (y, en las
+llamadas estructuradas, el de Instructor sobre un tool call simulado)."""
+
+import json
 
 import pytest
 from pydantic import SecretStr
@@ -21,13 +24,46 @@ SECONDARY = ProviderConfig(
 )
 
 
+# Una estimación válida (los totales cuadran con las fases).
+VALID_RESULT = {
+    "summary": "Portal de reservas: 120 horas en 6 semanas, 6600 € a 55 €/h.",
+    "total_hours": 120,
+    "total_duration_weeks": 6,
+    "total_cost_eur": 6600,
+    "confidence_pct": 75,
+    "phases": [
+        {
+            "name": "Diseño",
+            "hours": 40,
+            "duration_weeks": 2,
+            "cost_eur": 2200,
+            "confidence_pct": 80,
+            "assumptions": ["el cliente aporta la guía de marca"],
+        },
+        {
+            "name": "Desarrollo",
+            "hours": 80,
+            "duration_weeks": 4,
+            "cost_eur": 4400,
+            "confidence_pct": 70,
+            "assumptions": [],
+        },
+    ],
+}
+
+
 class FakeCompletion:
     """Sustituye a litellm.completion. `failing` son los proveedores que
     fallan al conectar; `fail_mid_stream` los que fallan tras el primer
-    fragmento."""
+    fragmento. Las llamadas con `tools` (salida estructurada vía Instructor)
+    responden con un tool call cuyos argumentos son, por orden, los de
+    `structured` (el último se repite)."""
 
     def __init__(self, text: str = "Estimación: 40 horas") -> None:
         self.text = text
+        self.structured: list[dict | str] = [VALID_RESULT]
+        self.structured_calls = 0
+        self.last_kwargs: dict | None = None
         self.failing: set[str] = set()
         self.error_cls = litellm.exceptions.ServiceUnavailableError
         self.fail_mid_stream: set[str] = set()
@@ -39,13 +75,27 @@ class FakeCompletion:
         provider = model.split("/", 1)[0]
         self.calls.append(provider)
         self.last_messages = kwargs["messages"]
+        self.last_kwargs = kwargs
         if provider in self.failing:
             raise self.error_cls(message="proveedor caído", llm_provider=provider, model=model)
         kwargs.pop("api_key")
-        response = _real_completion(**kwargs, api_key="unused", mock_response=self.text)
+        response = _real_completion(**kwargs, api_key="unused", **self._mock(kwargs))
         if kwargs.get("stream") and provider in self.fail_mid_stream:
             return self._broken_stream(response, provider, model)
         return response
+
+    def _mock(self, kwargs: dict) -> dict:
+        if "tools" not in kwargs:
+            return {"mock_response": self.text}
+        output = self.structured[min(self.structured_calls, len(self.structured) - 1)]
+        self.structured_calls += 1
+        arguments = output if isinstance(output, str) else json.dumps(output)
+        tool_call = {
+            "id": f"call_{self.structured_calls}",
+            "type": "function",
+            "function": {"name": kwargs["tools"][0]["function"]["name"], "arguments": arguments},
+        }
+        return {"mock_tool_calls": [tool_call]}
 
     @staticmethod
     def _broken_stream(stream, provider, model):
@@ -62,7 +112,7 @@ def fake_completion(monkeypatch) -> FakeCompletion:
     return fake
 
 
-def make_gateway(max_retries: int = 0) -> LLMGateway:
+def make_gateway(max_retries: int = 0, **kwargs) -> LLMGateway:
     return LLMGateway(
         [PRIMARY, SECONDARY],
         timeout_seconds=5,
@@ -70,6 +120,8 @@ def make_gateway(max_retries: int = 0) -> LLMGateway:
         max_tokens=256,
         cache=TTLCache[LLMResponse](ttl_seconds=60, max_entries=10),
         retry_backoff_seconds=0,
+        validation_retries=2,
+        **kwargs,
     )
 
 

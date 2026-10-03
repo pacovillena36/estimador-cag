@@ -1,127 +1,78 @@
 {#
-  Ejemplos few-shot. Los datos de cada ejemplo se definen una sola vez y se
-  renderizan en el mismo output_format y detail_level que se piden al
-  modelo, para que los ejemplos nunca contradigan las instrucciones.
-  Las horas de cada fase son la suma de sus tareas.
+  Ejemplos few-shot de v1: una app móvil y un pipeline de datos.
+  Horas por fase y semanas de calendario (fases consecutivas).
 #}
 {% set examples = [
     {
-        "project_type": "mobile_app",
         "description": "App de fidelización para una cadena de 12 cafeterías: registro de clientes, tarjeta de puntos con código QR que se escanea en caja, catálogo de recompensas canjeables, notificaciones push con promociones y un panel web para que cada local consulte canjes y estadísticas.",
+        "overview": "App de fidelización con backend propio, app Flutter para iOS y Android y panel web para los locales",
+        "rate": 55,
+        "confidence": 75,
         "phases": [
-            {
-                "name": "Descubrimiento y diseño UX/UI",
-                "confidence": 85,
-                "tasks": [
-                    {"name": "talleres de requisitos con el cliente", "hours": 12},
-                    {"name": "wireframes y prototipo navegable", "hours": 30},
-                ],
-                "assumptions": ["el cliente aporta la guía de marca", "se validan dos rondas de cambios de diseño"],
-            },
-            {
-                "name": "Backend y API de puntos",
-                "confidence": 75,
-                "tasks": [
-                    {"name": "modelo de datos, API y autenticación", "hours": 60},
-                    {"name": "lógica de puntos, canjes y antifraude del QR", "hours": 50},
-                ],
-                "assumptions": ["no hay integración con el TPV existente", "un único programa de puntos común a todos los locales"],
-            },
-            {
-                "name": "App móvil (Flutter, iOS y Android)",
-                "confidence": 70,
-                "tasks": [
-                    {"name": "registro, perfil y tarjeta QR", "hours": 70},
-                    {"name": "catálogo de recompensas y canje", "hours": 50},
-                    {"name": "notificaciones push", "hours": 24},
-                ],
-                "assumptions": ["un único código base Flutter para ambas plataformas", "sin modo offline"],
-            },
-            {
-                "name": "Panel web para los locales",
-                "confidence": 80,
-                "tasks": [
-                    {"name": "listado de canjes y estadísticas por local", "hours": 48},
-                ],
-                "assumptions": ["estadísticas predefinidas, sin informes a medida"],
-            },
-            {
-                "name": "QA y publicación en stores",
-                "confidence": 80,
-                "tasks": [
-                    {"name": "pruebas funcionales en dispositivos reales", "hours": 32},
-                    {"name": "publicación en App Store y Google Play", "hours": 12},
-                ],
-                "assumptions": ["el cliente dispone de cuentas de desarrollador en ambas stores"],
-            },
+            {"name": "Descubrimiento y diseño UX/UI", "hours": 42, "weeks": 2, "confidence": 85,
+             "assumptions": ["el cliente aporta la guía de marca", "se validan dos rondas de cambios de diseño"]},
+            {"name": "Backend y API de puntos", "hours": 110, "weeks": 3, "confidence": 75,
+             "assumptions": ["no hay integración con el TPV existente", "un único programa de puntos común a todos los locales", "incluye el antifraude del QR"]},
+            {"name": "App móvil (Flutter, iOS y Android)", "hours": 144, "weeks": 4, "confidence": 70,
+             "assumptions": ["un único código base Flutter para ambas plataformas", "sin modo offline"]},
+            {"name": "Panel web para los locales", "hours": 48, "weeks": 1, "confidence": 80,
+             "assumptions": ["estadísticas predefinidas, sin informes a medida"]},
+            {"name": "QA y publicación en stores", "hours": 44, "weeks": 1, "confidence": 80,
+             "assumptions": ["el cliente dispone de cuentas de desarrollador en ambas stores", "pruebas en dispositivos reales"]},
         ],
-        "duration": "10 a 12 semanas",
         "team": "1 jefe de proyecto a tiempo parcial, 1 diseñador UX/UI, 2 desarrolladores (Flutter y backend) y 1 QA",
         "risks": ["la revisión de Apple puede retrasar la publicación una o dos semanas", "el antifraude del QR puede requerir más iteraciones si hay abusos"],
     },
     {
-        "project_type": "data_pipeline",
         "description": "Pipeline diario que consolide las ventas de tres ERPs distintos (dos con API REST y uno que exporta ficheros CSV por SFTP) en un data warehouse en BigQuery, con un modelo de datos común y cuadros de mando de ventas por región y producto en Looker Studio.",
+        "overview": "Pipeline diario de ventas de tres ERPs a BigQuery con modelo común en dbt y dashboards en Looker Studio",
+        "rate": 60,
+        "confidence": 70,
         "phases": [
-            {
-                "name": "Análisis de fuentes",
-                "confidence": 70,
-                "tasks": [
-                    {"name": "inventario de tablas y campos de los tres ERPs", "hours": 16},
-                    {"name": "definición del modelo de datos común", "hours": 12},
-                ],
-                "assumptions": ["hay acceso a un entorno de pruebas de cada ERP", "los ERPs usan los mismos códigos de producto"],
-            },
-            {
-                "name": "Ingesta",
-                "confidence": 65,
-                "tasks": [
-                    {"name": "conectores de las dos APIs REST", "hours": 40},
-                    {"name": "carga de los CSV desde SFTP", "hours": 24},
-                ],
-                "assumptions": ["las APIs permiten extracción incremental por fecha", "el formato de los CSV es estable"],
-            },
-            {
-                "name": "Transformación y modelado (dbt)",
-                "confidence": 75,
-                "tasks": [
-                    {"name": "limpieza y normalización de datos", "hours": 36},
-                    {"name": "modelo de ventas y tests de calidad", "hours": 32},
-                ],
-                "assumptions": ["las reglas de negocio de conversión de divisas están documentadas"],
-            },
-            {
-                "name": "Orquestación y monitorización",
-                "confidence": 80,
-                "tasks": [
-                    {"name": "programación diaria y reintentos", "hours": 20},
-                    {"name": "alertas de fallo y de calidad de datos", "hours": 16},
-                ],
-                "assumptions": ["se usa Cloud Composer ya disponible en la cuenta del cliente"],
-            },
-            {
-                "name": "Cuadros de mando",
-                "confidence": 85,
-                "tasks": [
-                    {"name": "dashboards de ventas por región y producto", "hours": 30},
-                ],
-                "assumptions": ["dos dashboards con filtros estándar"],
-            },
+            {"name": "Análisis de fuentes", "hours": 28, "weeks": 1, "confidence": 70,
+             "assumptions": ["hay acceso a un entorno de pruebas de cada ERP", "los ERPs usan los mismos códigos de producto"]},
+            {"name": "Ingesta", "hours": 64, "weeks": 2, "confidence": 65,
+             "assumptions": ["las APIs permiten extracción incremental por fecha", "el formato de los CSV es estable"]},
+            {"name": "Transformación y modelado (dbt)", "hours": 68, "weeks": 2, "confidence": 75,
+             "assumptions": ["las reglas de conversión de divisas están documentadas"]},
+            {"name": "Orquestación y monitorización", "hours": 36, "weeks": 1, "confidence": 80,
+             "assumptions": ["se usa Cloud Composer ya disponible en la cuenta del cliente", "alertas de fallo y de calidad de datos por email"]},
+            {"name": "Cuadros de mando", "hours": 30, "weeks": 1, "confidence": 85,
+             "assumptions": ["dos dashboards con filtros estándar"]},
         ],
-        "duration": "7 a 8 semanas",
         "team": "1 ingeniero de datos senior, 1 ingeniero de datos y 1 analista de BI a tiempo parcial",
         "risks": ["la calidad de los datos de origen puede ser peor de lo esperado", "límites de uso de las APIs de los ERPs"],
     },
 ] %}
-{# Mayúscula solo en la primera letra (el filtro capitalize de Jinja pasa
-   el resto a minúsculas y estropearía siglas como API o QR). #}
-{% macro ucfirst(text) %}{{ text[:1] | upper }}{{ text[1:] }}{% endmacro %}
-{% macro confidence_label(pct) %}{% if pct >= 80 %}alta{% elif pct >= 65 %}media{% else %}baja{% endif %}{% endmacro %}
+{#
+  Cada ejemplo se renderiza como una instancia de EstimationResult en JSON
+  (un ejemplo de contenido, no una copia del schema). El coste de cada fase
+  es horas x tarifa y los totales se calculan aquí, así que los ejemplos
+  siempre cumplen los validadores del contrato. El nivel de detalle pedido
+  recorta el resumen y las asunciones igual que piden las instrucciones.
+#}
 {% for ex in examples %}
-{% set total = namespace(hours=0) %}
-{% for phase in ex.phases %}
-{% set total.hours = total.hours + phase.tasks | sum(attribute="hours") %}
+{% set phases = [] %}
+{% for p in ex.phases %}
+{% set _ = phases.append({
+    "name": p.name,
+    "hours": p.hours,
+    "duration_weeks": p.weeks,
+    "cost_eur": p.hours * ex.rate,
+    "confidence_pct": p.confidence,
+    "assumptions": p.assumptions[:1] if detail_level == "summary" else p.assumptions,
+}) %}
 {% endfor %}
+{% set total_hours = phases | sum(attribute="hours") %}
+{% set total_weeks = phases | sum(attribute="duration_weeks") %}
+{% set total_cost = phases | sum(attribute="cost_eur") %}
+{% set summary = ex.overview ~ ": unas " ~ total_hours ~ " horas en " ~ total_weeks ~ " semanas, con un coste de " ~ total_cost ~ " € (tarifa media de " ~ ex.rate ~ " €/h)." %}
+{% if detail_level != "summary" %}
+{% set summary = summary ~ " Riesgos principales: " ~ (ex.risks | join("; ")) ~ "." %}
+{% endif %}
+{% if detail_level == "detailed" %}
+{% set summary = summary ~ " Equipo recomendado: " ~ ex.team ~ "." %}
+{% endif %}
 ### Ejemplo {{ loop.index }}
 
 <project_description>
@@ -130,69 +81,15 @@
 
 Estimación:
 
-{% if output_format == "phases_table" %}
-{% if detail_level == "summary" %}
-| Fase | Horas | confidence_pct |
-|---|---|---|
-{% for phase in ex.phases %}
-| {{ phase.name }} | {{ phase.tasks | sum(attribute="hours") }} | {{ phase.confidence }} |
-{% endfor %}
-| **Total** | **{{ total.hours }}** | |
-{% else %}
-| Fase | Tareas | Horas | confidence_pct |
-|---|---|---|---|
-{% for phase in ex.phases %}
-| {{ phase.name }} | {{ ucfirst(phase.tasks | map(attribute="name") | join("; ")) }} | {{ phase.tasks | sum(attribute="hours") }} | {{ phase.confidence }} |
-{% endfor %}
-| **Total** | | **{{ total.hours }}** | |
-{% endif %}
-{% elif output_format == "line_items" %}
-{% if detail_level == "summary" %}
-{% for phase in ex.phases %}
-{{ loop.index }}. {{ phase.name }}: {{ phase.tasks | sum(attribute="hours") }} h
-{% endfor %}
-{% else %}
-{% set item = namespace(n=0) %}
-{% for phase in ex.phases %}
-{% for task in phase.tasks %}
-{% set item.n = item.n + 1 %}
-{{ item.n }}. {{ phase.name }} — {{ ucfirst(task.name) }}: {{ task.hours }} h
-{% endfor %}
-{% endfor %}
-{% endif %}
-
-**Total: {{ total.hours }} h**
-{% else %}
-{% for phase in ex.phases %}
-La fase de {{ phase.name }} requiere unas {{ phase.tasks | sum(attribute="hours") }} horas, con una confianza {{ confidence_label(phase.confidence) }}{% if detail_level != "summary" %}, y cubre {{ phase.tasks | map(attribute="name") | join(", ") }}{% endif %}.{% if detail_level == "detailed" %} Asumimos que {{ phase.assumptions | join(" y que ") }}.{% endif %}
-
-
-{% endfor %}
-En total, el proyecto suma unas {{ total.hours }} horas.
-{% endif %}
-{% if detail_level != "summary" %}
-
-{% if output_format == "narrative" %}
-La duración estimada es de {{ ex.duration }}{% if detail_level == "detailed" %}, con un equipo formado por {{ ex.team }}{% endif %}. Los principales riesgos son que {{ ex.risks | join(" y que ") }}.
-{% else %}
-{% if detail_level == "detailed" %}
-**Asunciones por fase:**
-
-{% for phase in ex.phases %}
-- {{ phase.name }}: {{ phase.assumptions | join("; ") }}.
-{% endfor %}
-
-**Equipo recomendado:** {{ ex.team }}.
-
-{% endif %}
-**Duración estimada:** {{ ex.duration }}.
-
-**Riesgos principales:**
-
-{% for risk in ex.risks %}
-- {{ ucfirst(risk) }}.
-{% endfor %}
-{% endif %}
-{% endif %}
+```json
+{{ {
+    "summary": summary,
+    "total_hours": total_hours,
+    "total_duration_weeks": total_weeks,
+    "total_cost_eur": total_cost,
+    "confidence_pct": ex.confidence,
+    "phases": phases,
+} | tojson }}
+```
 
 {% endfor %}

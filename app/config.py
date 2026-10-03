@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 60.0
     # Reintentos sobre el MISMO proveedor antes de rotar al siguiente.
     llm_max_retries: int = 1
+    # Salida estructurada (Instructor): veces que se reenvía al modelo su
+    # respuesta con los errores de validación antes de darla por inválida.
+    llm_validation_retries: int = 2
     llm_max_tokens: int = 2048
 
     # SecretStr evita que las claves aparezcan en repr(), logs o trazas.

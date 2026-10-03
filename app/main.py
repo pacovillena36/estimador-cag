@@ -14,8 +14,11 @@ from app.config import settings
 from app.logging_config import configure_logging
 from app.prompts.loader import PromptVersionNotFoundError, validate_estimation_prompt_version
 from app.routers import estimations
-from app.routers.estimations import InvalidEstimationError
-from app.services.llm_gateway import AllProvidersFailedError, get_llm_gateway
+from app.services.llm_gateway import (
+    AllProvidersFailedError,
+    InvalidStructuredOutputError,
+    get_llm_gateway,
+)
 
 configure_logging(settings)
 log = structlog.get_logger(__name__)
@@ -100,9 +103,10 @@ app = FastAPI(
         "API para generar estimaciones de proyectos de software a partir de "
         "la descripción del proyecto, su tipo, el nivel de detalle y el "
         "formato de salida deseados. Los prompts son templates Jinja2 "
-        "versionados con ejemplos few-shot."
+        "versionados con ejemplos few-shot, y la respuesta del modelo es una "
+        "estimación estructurada validada con Pydantic (Instructor)."
     ),
-    version="0.3.0",
+    version="0.4.0",
     default_response_class=UTF8JSONResponse,
     lifespan=lifespan,
 )
@@ -122,8 +126,9 @@ async def _all_providers_failed(_: Request, __: AllProvidersFailedError) -> JSON
     )
 
 
-@app.exception_handler(InvalidEstimationError)
-async def _invalid_estimation(_: Request, exc: InvalidEstimationError) -> JSONResponse:
+# El detalle de validación ya lo registra el wrapper (llm.validation_failed).
+@app.exception_handler(InvalidStructuredOutputError)
+async def _invalid_estimation(_: Request, exc: InvalidStructuredOutputError) -> JSONResponse:
     log.warning("estimation.invalid", reason=str(exc))
     return UTF8JSONResponse(
         status_code=502,

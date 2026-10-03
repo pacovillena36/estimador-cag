@@ -4,6 +4,9 @@ EstimationRequest y lo envía al servicio IA (POST /api/v1/estimate).
 Es un cliente HTTP puro: no importa la configuración ni las API keys del
 servicio. Solo reutiliza el contrato (app/schemas.py) para validar el
 formulario antes de enviarlo, con las mismas reglas que aplica la API.
+
+El servicio devuelve la estimación estructurada (EstimationResult); la
+presentación según el formato elegido se hace aquí (estimation_view.py).
 """
 
 import os
@@ -19,6 +22,7 @@ from app.schemas import (
     OutputFormat,
     ProjectType,
 )
+from estimation_view import render
 
 
 def _api_base_url() -> str:
@@ -110,7 +114,7 @@ st.set_page_config(page_title="Estimador de proyectos", page_icon="🧮")
 st.title("🧮 Estimador de proyectos")
 st.write(
     "Describe el proyecto, elige el tipo, el nivel de detalle y el formato, "
-    "y recibirás una estimación de esfuerzo en horas."
+    "y recibirás una estimación por fases: horas, semanas, coste y confianza."
 )
 
 with st.form("estimation_form"):
@@ -177,4 +181,10 @@ if last := st.session_state.get("last_estimation"):
         f"{OUTPUT_FORMAT_LABELS[request.output_format]} · "
         f"prompt {response.prompt_version}"
     )
-    st.markdown(response.text)
+    result = response.result
+    hours, weeks, cost, confidence = st.columns(4)
+    hours.metric("Horas", result.total_hours)
+    weeks.metric("Semanas", result.total_duration_weeks)
+    cost.metric("Coste", f"{result.total_cost_eur:,} €".replace(",", "."))
+    confidence.metric("Confianza", f"{result.confidence_pct} %")
+    st.markdown(render(result, request.output_format, request.detail_level))

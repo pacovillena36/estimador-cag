@@ -65,3 +65,9 @@ def configure_logging(settings: Settings) -> None:
     # (transcripciones del cliente): lo limitamos a avisos y errores.
     for name in ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy"):
         logging.getLogger(name).setLevel(logging.WARNING)
+
+    # Instructor registra en ERROR el mensaje completo de cada fallo (del
+    # proveedor o de validación, que puede citar la salida del modelo). El
+    # wrapper ya registra esos fallos sin contenido (llm.provider_failed,
+    # llm.validation_failed), así que se silencia.
+    logging.getLogger("instructor").setLevel(logging.CRITICAL)

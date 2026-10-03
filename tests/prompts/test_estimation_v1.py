@@ -2,6 +2,7 @@
 a ningún modelo ni API externa, así que corren en milisegundos."""
 
 import itertools
+import json
 import re
 
 import pytest
@@ -9,7 +10,13 @@ from jinja2 import UndefinedError
 
 from app.prompts import loader
 from app.prompts.loader import PromptVersionNotFoundError, render_estimation_prompt
-from app.schemas import DetailLevel, EstimationRequest, OutputFormat, ProjectType
+from app.schemas import (
+    DetailLevel,
+    EstimationRequest,
+    EstimationResult,
+    OutputFormat,
+    ProjectType,
+)
 
 DESCRIPTION = (
     "Portal interno para que los empleados reserven salas y puestos de "
@@ -29,6 +36,11 @@ def make_request(**overrides) -> EstimationRequest:
     return EstimationRequest(**(fields | overrides))
 
 
+def examples_json(system: str) -> list[dict]:
+    """Los ejemplos few-shot, parseados desde sus bloques ```json."""
+    return [json.loads(block) for block in re.findall(r"```json\n(.*?)\n```", system, re.DOTALL)]
+
+
 def project_description_block(user: str) -> str:
     match = re.search(r"<project_description>\n(.*)\n</project_description>", user, re.DOTALL)
     assert match, "el mensaje de usuario no tiene bloque <project_description>"
@@ -44,17 +56,22 @@ def test_description_is_rendered_literally_inside_project_description_block():
 
 
 @pytest.mark.parametrize("detail_level", list(DetailLevel))
-def test_phases_table_mentions_confidence_pct_and_narrative_does_not(detail_level):
-    table_system, _ = render_estimation_prompt(
-        make_request(output_format=OutputFormat.PHASES_TABLE, detail_level=detail_level)
-    )
-    narrative_system, _ = render_estimation_prompt(
-        make_request(output_format=OutputFormat.NARRATIVE, detail_level=detail_level)
-    )
-    assert "phases_table" in table_system
-    assert "confidence_pct" in table_system
-    # Ni en las instrucciones ni en los ejemplos few-shot.
-    assert "confidence_pct" not in narrative_system
+def test_output_format_is_only_a_content_hint(detail_level):
+    """El formato de presentación cambia la pista al modelo, pero no los
+    ejemplos: la estructura de la respuesta es siempre EstimationResult."""
+    systems = {
+        output_format: render_estimation_prompt(
+            make_request(output_format=output_format, detail_level=detail_level)
+        )[0]
+        for output_format in OutputFormat
+    }
+    for output_format, system in systems.items():
+        assert f"`{output_format.value}`" in system
+        others = set(OutputFormat) - {output_format}
+        assert all(f"`{other.value}`" not in system for other in others)
+    reference = examples_json(systems[OutputFormat.NARRATIVE])
+    assert reference
+    assert all(examples_json(system) == reference for system in systems.values())
 
 
 @pytest.mark.parametrize("output_format", list(OutputFormat))
@@ -79,20 +96,37 @@ def test_returns_system_and_user_as_separate_messages():
     assert "Eres un estimador" not in user
 
 
-def test_line_items_format_instructions():
-    system, _ = render_estimation_prompt(make_request(output_format=OutputFormat.LINE_ITEMS))
-    assert "line_items" in system
-    assert "confidence_pct" not in system
+@pytest.mark.parametrize("version", ["v1", "v2"])
+@pytest.mark.parametrize("detail_level", list(DetailLevel))
+def test_examples_are_valid_estimation_results(version, detail_level):
+    """Los ejemplos cumplen el mismo contrato (y validadores de totales)
+    que se exige al modelo: nunca le enseñan una respuesta inválida."""
+    system, _ = render_estimation_prompt(make_request(detail_level=detail_level), version=version)
+    examples = examples_json(system)
+    assert len(examples) == 2
+    for example in examples:
+        EstimationResult.model_validate(example)
 
 
-def test_examples_follow_the_requested_format():
-    narrative, _ = render_estimation_prompt(make_request(output_format=OutputFormat.NARRATIVE))
-    line_items, _ = render_estimation_prompt(make_request(output_format=OutputFormat.LINE_ITEMS))
-    table, _ = render_estimation_prompt(make_request(output_format=OutputFormat.PHASES_TABLE))
+def test_examples_follow_the_requested_detail_level():
+    def examples_for(detail_level):
+        system, _ = render_estimation_prompt(make_request(detail_level=detail_level))
+        return examples_json(system)
 
-    assert "|---" in table
-    assert "|---" not in narrative and "|---" not in line_items
-    assert "**Total:" in line_items
+    summary = examples_for(DetailLevel.SUMMARY)
+    detailed = examples_for(DetailLevel.DETAILED)
+    assert all(len(p["assumptions"]) <= 1 for ex in summary for p in ex["phases"])
+    assert any(len(p["assumptions"]) > 1 for ex in detailed for p in ex["phases"])
+    assert all("Riesgos principales" not in ex["summary"] for ex in summary)
+    assert all("Equipo recomendado" in ex["summary"] for ex in detailed)
+
+
+def test_prompt_does_not_describe_the_response_structure():
+    """El shape lo define EstimationResult (vía Instructor), no el prompt."""
+    system, _ = render_estimation_prompt(make_request())
+    assert "## Formato de salida" not in system
+    assert "|---" not in system
+    assert "Responde en JSON" not in system
 
 
 @pytest.mark.parametrize(
@@ -106,7 +140,7 @@ def test_examples_follow_the_requested_format():
 )
 def test_project_type_specific_guidance(project_type, expected):
     system, _ = render_estimation_prompt(make_request(project_type=project_type))
-    guidance = system.split("## Formato de salida")[0]
+    guidance = system.split("## Nivel de detalle")[0]
     assert expected in guidance
 
 
