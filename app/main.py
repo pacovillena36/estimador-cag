@@ -12,7 +12,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.config import settings
 from app.logging_config import configure_logging
-from app.prompts.loader import validate_estimation_prompt_version
+from app.prompts.loader import PromptVersionNotFoundError, validate_estimation_prompt_version
 from app.routers import estimations
 from app.routers.estimations import InvalidEstimationError
 from app.services.llm_gateway import AllProvidersFailedError, get_llm_gateway
@@ -128,6 +128,17 @@ async def _invalid_estimation(_: Request, exc: InvalidEstimationError) -> JSONRe
     return UTF8JSONResponse(
         status_code=502,
         content={"detail": "El modelo no devolvió una estimación válida. Inténtalo de nuevo."},
+    )
+
+
+# La versión configurada se valida al arrancar, así que este error solo
+# llega por una ?prompt_version= pedida por el cliente que no existe.
+@app.exception_handler(PromptVersionNotFoundError)
+async def _prompt_version_not_found(_: Request, exc: PromptVersionNotFoundError) -> JSONResponse:
+    log.info("estimation.unknown_prompt_version", reason=str(exc))
+    return UTF8JSONResponse(
+        status_code=422,
+        content={"detail": "La versión de prompt pedida no existe."},
     )
 
 

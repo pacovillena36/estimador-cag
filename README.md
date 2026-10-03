@@ -109,9 +109,21 @@ system, user = render_estimation_prompt(request, version="v1")
 El entorno de Jinja2 usa `StrictUndefined` (una variable que falte es un
 error, no un hueco vacío en el prompt), `trim_blocks` y `lstrip_blocks`.
 
-**Nueva versión**: copia `estimation/v1/` a `estimation/v2/`, edítala y pon
-`PROMPT_VERSION=v2` en `.env`. El resto del código no cambia, y la API
-comprueba al arrancar que la versión configurada existe.
+**Versiones disponibles**:
+
+| Versión | Cambio |
+|---|---|
+| `v1` | Versión base. Ejemplos few-shot: app móvil y pipeline de datos. |
+| `v2` | Variación deliberada **solo en los ejemplos**: un SaaS web y una herramienta interna (los `project_type` que v1 no cubre). `system.j2` y `user.j2` son idénticos a v1, así que las diferencias de resultado se pueden atribuir a los ejemplos. |
+
+La versión por defecto es `PROMPT_VERSION` (en `.env`; la API comprueba al
+arrancar que existe). Cada petición puede elegir otra con el query param
+`?prompt_version=v2` (en `/estimate` y en `/estimate/stream`), útil para
+comparar versiones con la misma entrada. Una versión inexistente o con
+formato no válido devuelve `422` sin llamar al modelo.
+
+**Nueva versión**: copia `estimation/v1/` a `estimation/vN/` y edítala. El
+resto del código no cambia.
 
 **Seguridad frente a prompt injection**: la descripción va siempre en el
 mensaje `user` (nunca en el `system`), delimitada por etiquetas, y el system
@@ -311,8 +323,11 @@ Respuesta esperada (`200`):
 }
 ```
 
+Para usar otra versión del prompt: `POST /api/v1/estimate?prompt_version=v2`.
+
 Errores: `422` si la petición no cumple el contrato (descripción de menos
-de 20 o más de 2000 caracteres, o un valor fuera de los enums), `503` con
+de 20 o más de 2000 caracteres, un valor fuera de los enums o una
+`prompt_version` que no existe), `503` con
 cabecera `Retry-After` si fallan todos los proveedores y `502` si el modelo
 devuelve una respuesta vacía.
 
@@ -363,7 +378,7 @@ Streamlit Cloud); por defecto `http://localhost:8000`.
 uv run pytest
 ```
 
-- `tests/prompts/test_estimation_v1.py`: tests del template, sin llamar a
+- `tests/prompts/test_estimation_v1.py` y `test_estimation_v2.py`: tests de los templates, sin llamar a
   ningún modelo (milisegundos). Comprueban que la descripción aparece
   literal dentro de `<project_description>`, que `phases_table` pide
   `confidence_pct` y `narrative` no, que `detailed` pide las asunciones por

@@ -11,7 +11,7 @@ import json
 from collections.abc import Iterator
 
 import structlog
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
 from app.config import settings
@@ -36,11 +36,26 @@ def _parse_estimation(text: str) -> str:
     return estimation
 
 
-def _render_prompt(request: EstimationRequest, *, stream: bool) -> tuple[str, str]:
+def get_prompt_version(
+    prompt_version: str | None = Query(
+        default=None,
+        pattern=r"^v\d+$",
+        description=(
+            "Versión del prompt a usar (p. ej. v2). Si se omite, se usa la "
+            "configurada en PROMPT_VERSION."
+        ),
+    ),
+) -> str:
+    return prompt_version or settings.prompt_version
+
+
+def _render_prompt(
+    request: EstimationRequest, *, version: str, stream: bool
+) -> tuple[str, str]:
     # prompt_version y las opciones del formulario quedan enlazadas al
     # contexto de logs: aparecen también en los eventos llm.* del wrapper.
     # Nunca se registra el texto de la descripción, solo su tamaño.
-    structlog.contextvars.bind_contextvars(prompt_version=settings.prompt_version)
+    structlog.contextvars.bind_contextvars(prompt_version=version)
     log.info(
         "estimation.requested",
         stream=stream,
@@ -49,21 +64,24 @@ def _render_prompt(request: EstimationRequest, *, stream: bool) -> tuple[str, st
         detail_level=request.detail_level.value,
         output_format=request.output_format.value,
     )
-    return render_estimation_prompt(request, version=settings.prompt_version)
+    # Si la versión no existe lanza PromptVersionNotFoundError (-> 422)
+    # antes de llamar al modelo.
+    return render_estimation_prompt(request, version=version)
 
 
 @router.post("", response_model=EstimationResponse)
 def create_estimation(
     request: EstimationRequest,
     gateway: LLMGateway = Depends(get_llm_gateway),
+    prompt_version: str = Depends(get_prompt_version),
 ) -> EstimationResponse:
-    system, user = _render_prompt(request, stream=False)
+    system, user = _render_prompt(request, version=prompt_version, stream=False)
 
     result = gateway.complete(system, user)
     text = _parse_estimation(result.text)
 
     log.info("estimation.generated", cached=result.cached, chars=len(text))
-    return EstimationResponse(text=text, prompt_version=settings.prompt_version)
+    return EstimationResponse(text=text, prompt_version=prompt_version)
 
 
 def _sse_event(event: str, data: dict) -> str:
@@ -74,6 +92,7 @@ def _sse_event(event: str, data: dict) -> str:
 def create_estimation_stream(
     request: EstimationRequest,
     gateway: LLMGateway = Depends(get_llm_gateway),
+    prompt_version: str = Depends(get_prompt_version),
 ) -> StreamingResponse:
     """Misma generación que create_estimation, pero en streaming (SSE):
     emite un evento `delta` por cada fragmento de texto recibido del LLM y,
@@ -84,7 +103,7 @@ def create_estimation_stream(
     La conexión con el proveedor (y el fallback) ocurre antes de devolver
     la respuesta, así que si todos fallan el cliente recibe un 503 normal.
     """
-    system, user = _render_prompt(request, stream=True)
+    system, user = _render_prompt(request, version=prompt_version, stream=True)
     llm_stream = gateway.stream(system, user)
 
     def event_stream() -> Iterator[str]:
@@ -104,7 +123,7 @@ def create_estimation_stream(
         yield _sse_event(
             "done",
             {
-                "prompt_version": settings.prompt_version,
+                "prompt_version": prompt_version,
                 "provider": result.provider,
                 "model": result.model,
                 "input_tokens": result.input_tokens,

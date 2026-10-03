@@ -59,6 +59,37 @@ def test_form_options_change_the_prompt(client, fake_completion):
     assert fake_completion.calls == ["anthropic", "anthropic"]
 
 
+
+def test_prompt_version_query_param_selects_the_template(client, fake_completion):
+    response = client.post("/api/v1/estimate?prompt_version=v2", json=VALID_REQUEST)
+    assert response.status_code == 200
+    assert response.json()["prompt_version"] == "v2"
+    v2_system = fake_completion.last_messages[0]["content"]
+
+    client.post("/api/v1/estimate", json=VALID_REQUEST)
+    v1_system = fake_completion.last_messages[0]["content"]
+
+    assert "fisioterapia" in v2_system and "fisioterapia" not in v1_system
+    # Versión distinta -> prompt distinto -> no comparten entrada de caché.
+    assert fake_completion.calls == ["anthropic", "anthropic"]
+
+
+def test_stream_accepts_prompt_version(client):
+    response = client.post("/api/v1/estimate/stream?prompt_version=v2", json=VALID_REQUEST)
+    event, done = _sse_events(response.text)[-1]
+    assert event == "done"
+    assert done["prompt_version"] == "v2"
+
+
+@pytest.mark.parametrize("path", ["/api/v1/estimate", "/api/v1/estimate/stream"])
+@pytest.mark.parametrize("version", ["v99", "latest", "../v1", ""])
+def test_unknown_prompt_version_is_rejected_without_calling_the_model(
+    client, fake_completion, path, version
+):
+    response = client.post(f"{path}?prompt_version={version}", json=VALID_REQUEST)
+    assert response.status_code == 422
+    assert fake_completion.calls == []
+
 @pytest.mark.parametrize(
     "override",
     [
