@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.exceptions import RequestValidationError
 
 from app.config import Settings, get_settings
+from app.request_context import RequestContext, get_request_context
 from app.schemas import EstimationRequest, EstimationResponse, ErrorResponse
 from app.services.estimation_service import EstimationService, get_estimation_service
 
@@ -68,6 +69,7 @@ def validated_request(
 def create_estimation(
     request: EstimationRequest = Depends(validated_request),
     prompt_version: str = Depends(get_prompt_version),
+    ctx: RequestContext = Depends(get_request_context),
     service: EstimationService = Depends(get_estimation_service),
 ) -> EstimationResponse:
-    return service.estimate(request, prompt_version=prompt_version)
+    return service.estimate(request, prompt_version=prompt_version, ctx=ctx)

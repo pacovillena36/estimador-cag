@@ -5,6 +5,7 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.guardrails.base import GuardrailMode
+from app.semantic_cache.ports import CacheMode
 from app.schemas import (
     DEFAULT_MIN_CONFIDENCE_PCT,
     DESCRIPTION_HARD_MAX_LENGTH,
@@ -83,6 +84,28 @@ class Settings(BaseSettings):
     description_max_length: int = Field(
         2000, ge=DESCRIPTION_MIN_LENGTH, le=DESCRIPTION_HARD_MAX_LENGTH
     )
+
+    # Caché semántico (Redis Stack + redisvl). off | shadow | active.
+    # shadow (por defecto): calcula embedding, consulta y escribe, pero
+    # siempre responde con el LLM; sirve para medir antes de activarlo.
+    semantic_cache_mode: CacheMode = CacheMode.SHADOW
+    # Obligatoria si el modo no es off. Fuera de local: rediss:// (TLS) con
+    # usuario ACL y contraseña.
+    redis_url: SecretStr | None = None
+    semantic_cache_index_name: str = Field("estimation_cache", pattern=r"^[A-Za-z0-9_:-]{1,64}$")
+    # Distancia coseno máxima para un hit (0.08 ≈ similitud >= 0.92).
+    semantic_cache_distance_threshold: float = Field(0.08, gt=0, le=0.3)
+    # Retención: entre 5 minutos y 30 días.
+    semantic_cache_ttl_seconds: int = Field(86_400, ge=300, le=30 * 86_400)
+    # El caché no debe añadir más latencia de la que ahorra.
+    redis_socket_timeout_ms: int = Field(150, ge=10, le=5_000)
+
+    # Embeddings (OpenAI) para el caché semántico. La dimensión debe
+    # coincidir con la del índice de Redis.
+    embedding_api_key: SecretStr | None = None
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dimensions: int = Field(1536, ge=64, le=3072)
+    embedding_timeout_ms: int = Field(1000, ge=100, le=10_000)
 
     # Caché exact-match de respuestas del LLM (en memoria, por proceso)
     llm_cache_enabled: bool = True

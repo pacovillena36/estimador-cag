@@ -5,9 +5,11 @@ from fastapi.testclient import TestClient
 from instructor.core.exceptions import InstructorRetryException
 
 from app.config import get_settings
+from app.embeddings import get_embedder
 from app.guardrails.moderation import get_moderation_client
 from app.main import app
 from app.schemas import OUT_OF_SCOPE_PREFIX, EstimationResponse, EstimationResult
+from app.semantic_cache.factory import get_semantic_cache
 from app.services.llm_gateway import get_llm_gateway, litellm
 from tests.conftest import VALID_RESULT, guardrail_events, make_gateway, make_settings
 
@@ -39,7 +41,7 @@ CHATBOT_REQUEST = VALID_REQUEST | {
 
 
 @pytest.fixture
-def api(gateway, fake_completion, fake_moderation):
+def api(gateway, fake_completion, fake_moderation, fake_embedder, fake_cache):
     """Cliente HTTP con LLM y moderación falsos y settings herméticos.
     `api(**settings)` devuelve un TestClient con esos settings."""
 
@@ -49,6 +51,8 @@ def api(gateway, fake_completion, fake_moderation):
         app.dependency_overrides[get_llm_gateway] = lambda: gateway_override or gateway
         app.dependency_overrides[get_moderation_client] = lambda: fake_moderation
         app.dependency_overrides[get_settings] = lambda: settings
+        app.dependency_overrides[get_embedder] = lambda: fake_embedder
+        app.dependency_overrides[get_semantic_cache] = lambda: fake_cache
         return TestClient(app, raise_server_exceptions=False)
 
     yield build
@@ -76,7 +80,12 @@ def _assert_error(response, status: int, code: str) -> dict:
 def test_estimate_returns_the_structured_result_and_prompt_version(client):
     response = client.post("/api/v1/estimate", json=VALID_REQUEST)
     assert response.status_code == 200
-    assert response.json() == {"result": VALID_RESULT, "prompt_version": "v3", "out_of_scope": False}
+    assert response.json() == {
+        "result": VALID_RESULT,
+        "prompt_version": "v3",
+        "cached": False,
+        "out_of_scope": False,
+    }
     EstimationResponse.model_validate(response.json())
 
 
@@ -87,6 +96,7 @@ def test_out_of_scope_result_is_200_with_flag(client, fake_completion):
     assert response.json() == {
         "result": OUT_OF_SCOPE_RESULT,
         "prompt_version": "v3",
+        "cached": False,
         "out_of_scope": True,
     }
 
@@ -457,3 +467,39 @@ def test_request_id_is_generated_or_propagated(client):
     assert propagated.headers["x-request-id"] == "abc-123"
     sanitized = client.get("/health", headers={"X-Request-ID": "bad id <script>"})
     assert sanitized.headers["x-request-id"] != "bad id <script>"
+
+
+# ------------------------------------------------------------ caché semántico
+
+
+def test_active_semantic_cache_serves_equivalent_request_without_llm(api, fake_completion, fake_moderation):
+    client = api(semantic_cache_mode="active")
+    first = client.post("/api/v1/estimate", json=VALID_REQUEST)
+    second = client.post("/api/v1/estimate", json=VALID_REQUEST | {"description": "  " + VALID_REQUEST["description"]})
+
+    assert first.json()["cached"] is False
+    assert second.status_code == 200
+    assert second.json() == first.json() | {"cached": True}
+    assert fake_completion.calls == ["anthropic"]
+    # Un hit nunca se salta la moderación de entrada.
+    assert len(fake_moderation.calls) == 2
+
+
+def test_rejected_input_never_reaches_the_semantic_cache(api, fake_moderation, fake_embedder, fake_cache):
+    client = api(semantic_cache_mode="active")
+    fake_moderation.flagged = True
+    assert client.post("/api/v1/estimate", json=VALID_REQUEST).status_code == 400
+    assert fake_embedder.calls == [] and fake_cache.lookups == []
+
+
+def test_semantic_cache_failure_does_not_break_the_endpoint(api, fake_cache):
+    client = api(semantic_cache_mode="active")
+    fake_cache.failing = True
+    response = client.post("/api/v1/estimate", json=VALID_REQUEST)
+    assert response.status_code == 200 and response.json()["cached"] is False
+
+
+def test_openapi_documents_the_cached_flag(client):
+    props = client.get("/openapi.json").json()["components"]["schemas"]["EstimationResponse"]["properties"]
+    assert props["cached"]["type"] == "boolean"
+    assert "caché semántico" in props["cached"]["description"]

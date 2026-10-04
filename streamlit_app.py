@@ -191,6 +191,7 @@ if last := st.session_state.get("last_estimation"):
         f"{DETAIL_LEVEL_LABELS[request.detail_level]} · "
         f"{OUTPUT_FORMAT_LABELS[request.output_format]} · "
         f"prompt {response.prompt_version}"
+        + (" · ⚡ respuesta del caché" if response.cached else "")
     )
     result = response.result
     if response.out_of_scope:

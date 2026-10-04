@@ -191,6 +191,13 @@ class EstimationResult(BaseModel):
 class EstimationResponse(BaseModel):
     result: EstimationResult = Field(description="Estimación estructurada y validada.")
     prompt_version: str = Field(description="Versión del prompt usada (p. ej. v3).")
+    cached: bool = Field(
+        default=False,
+        description=(
+            "true si la estimación se ha servido del caché semántico (una "
+            "petición equivalente ya respondida) sin llamar al LLM."
+        ),
+    )
 
     @computed_field(  # type: ignore[prop-decorator]
         description=(

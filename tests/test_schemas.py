@@ -129,6 +129,7 @@ def test_response_wraps_the_result_and_flags_out_of_scope():
     assert response.model_dump(mode="json") == {
         "result": VALID_RESULT,
         "prompt_version": "v1",
+        "cached": False,
         "out_of_scope": False,
     }
     out = EstimationResponse(result=EstimationResult.model_validate(OUT_OF_SCOPE), prompt_version="v3")

@@ -4,6 +4,7 @@
 pero sí ejercitan el parseo real de respuestas de LiteLLM (y, en las
 llamadas estructuradas, el de Instructor sobre un tool call simulado)."""
 
+import hashlib
 import json
 
 import pytest
@@ -11,7 +12,9 @@ from pydantic import SecretStr
 
 from app.config import Settings, get_settings
 from app.logging_config import configure_logging
+from app.embeddings import EmbeddingError
 from app.guardrails.base import FailurePolicy, GuardrailResult, ModerationUnavailableError
+from app.semantic_cache.ports import CachedEntry, CacheUnavailableError
 from app.services import llm_gateway  # antes que litellm: fija su configuración
 from app.services.llm_gateway import litellm
 from app.services.cache import TTLCache
@@ -119,12 +122,12 @@ def fake_completion(monkeypatch) -> FakeCompletion:
 
 
 def make_gateway(max_retries: int = 0, **kwargs) -> LLMGateway:
+    kwargs.setdefault("cache", TTLCache[LLMResponse](ttl_seconds=60, max_entries=10))
     return LLMGateway(
         [PRIMARY, SECONDARY],
         timeout_seconds=5,
         max_retries=max_retries,
         max_tokens=256,
-        cache=TTLCache[LLMResponse](ttl_seconds=60, max_entries=10),
         retry_backoff_seconds=0,
         validation_retries=2,
         **kwargs,
@@ -183,7 +186,7 @@ def fake_moderation() -> FakeModeration:
 
 def make_settings(**overrides) -> Settings:
     """Settings herméticos: ignoran el .env local del desarrollador."""
-    base = {"_env_file": None, "openai_api_key": "sk-test-o"}
+    base = {"_env_file": None, "openai_api_key": "sk-test-o", "semantic_cache_mode": "off"}
     return Settings(**(base | overrides))
 
 
@@ -194,3 +197,61 @@ def guardrail_events(caplog, name: str = "guardrail.evaluated") -> list[dict]:
         for record in caplog.records
         if isinstance(record.msg, dict) and record.msg.get("event") == name
     ]
+
+
+# ------------------------------------------------------------ caché semántico
+
+
+class FakeEmbedder:
+    """Embeddings deterministas sin red. Por defecto cada texto distinto da
+    un vector distinto; `vectors` permite fijar el vector de un texto (p. ej.
+    para que una reformulación caiga cerca). `failing` simula un timeout."""
+
+    def __init__(self) -> None:
+        self.vectors: dict[str, list[float]] = {}
+        self.failing = False
+        self.calls: list[str] = []
+
+    def embed(self, text: str) -> list[float]:
+        self.calls.append(text)
+        if self.failing:
+            raise EmbeddingError("APITimeoutError")
+        if text in self.vectors:
+            return self.vectors[text]
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        return [byte / 255 for byte in digest[:8]]
+
+
+class FakeSemanticCache:
+    """Caché en memoria con la misma semántica de bucket que el real; hit
+    solo con el mismo vector exacto (la similitud real se prueba en los
+    tests de integración con Redis Stack). `failing` simula Redis caído."""
+
+    def __init__(self) -> None:
+        self.entries: dict[tuple[str, tuple[float, ...]], str] = {}
+        self.failing = False
+        self.lookups: list[str] = []
+        self.stores: list[str] = []
+
+    def lookup(self, *, bucket: str, vector: list[float]) -> CachedEntry | None:
+        self.lookups.append(bucket)
+        if self.failing:
+            raise CacheUnavailableError("TimeoutError")
+        response = self.entries.get((bucket, tuple(vector)))
+        return CachedEntry(response=response, distance=0.01) if response is not None else None
+
+    def store(self, *, bucket: str, vector: list[float], response: str) -> None:
+        self.stores.append(bucket)
+        if self.failing:
+            raise CacheUnavailableError("TimeoutError")
+        self.entries[(bucket, tuple(vector))] = response
+
+
+@pytest.fixture
+def fake_embedder() -> FakeEmbedder:
+    return FakeEmbedder()
+
+
+@pytest.fixture
+def fake_cache() -> FakeSemanticCache:
+    return FakeSemanticCache()

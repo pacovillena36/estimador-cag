@@ -29,6 +29,15 @@ estimador-cag/
 │   │   ├── injection.py          # Patrones de prompt injection (ES/EN)
 │   │   ├── pii.py                # Emails, teléfonos e IBAN (detección y redacción)
 │   │   └── pipeline.py           # Pipelines de input y output, logging
+│   ├── semantic_cache/
+│   │   ├── ports.py              # Protocol EstimationCache, CacheMode
+│   │   ├── bucket.py             # build_bucket_key (pura)
+│   │   ├── normalization.py      # normalize_description (pura)
+│   │   ├── redis_cache.py        # Adaptador Redis Stack + redisvl (SemanticCache)
+│   │   ├── noop.py               # Caché nulo (modo off)
+│   │   └── factory.py            # get_semantic_cache() según la configuración
+│   ├── embeddings.py             # Cliente de embeddings (OpenAI) con timeout
+│   ├── request_context.py        # RequestContext (tenant) fuera del body
 │   ├── prompts/
 │   │   ├── loader.py             # render_estimation_prompt(request, version) -> (system, user)
 │   │   └── estimation/
@@ -46,6 +55,7 @@ estimador-cag/
 │       └── cache.py              # Caché exact-match en memoria (TTL + LRU)
 ├── tests/
 │   ├── guardrails/               # Normalización, injection, PII, moderación, pipeline
+│   ├── semantic_cache/           # Bucket, servicio con dobles, adaptadores e integración (Redis Stack)
 │   ├── prompts/
 │   │   ├── test_estimation_v1.py # Tests de los templates (sin llamar a ningún modelo)
 │   │   └── test_estimation_v2.py
@@ -110,7 +120,8 @@ Cualquier otro campo se rechaza (`extra="forbid"`).
 
 **`EstimationResponse`**: `result` (un `EstimationResult`),
 `prompt_version` (versión del prompt usada, p. ej. `v3`) y `out_of_scope`
-(calculado en el servidor: `true` si el modelo no pudo estimar). Los
+(calculado en el servidor: `true` si el modelo no pudo estimar) y `cached`
+(`true` si se sirvió del caché semántico sin llamar al LLM). Los
 consumidores deben usar `out_of_scope`, nunca interpretar el `summary`.
 
 **`EstimationResult`**: la estimación estructurada. Es a la vez el contrato
@@ -264,6 +275,129 @@ usa `description_sha256` (SHA-256 truncado). Además: `guardrail.unavailable`
 `llm.validation_retry` (cada reintento de Instructor) y
 `estimation.generated` con `out_of_scope`. El repo no tiene Prometheus ni
 OpenTelemetry, así que las métricas se obtienen agregando estos logs.
+
+## Caché semántico (Redis Stack + redisvl)
+
+Muchas peticiones son reformulaciones de otras ya respondidas. El caché
+semántico devuelve la estimación guardada de una petición **equivalente**
+sin llamar al LLM (ahorra 5-15 s y el coste de la llamada). Es distinto de
+la caché exact-match del wrapper (misma petición exacta, en memoria).
+
+```
+POST /estimate
+  -> validación (capa 1) -> input guardrails (capa 2)      rechazo: 400/422, sin tocar caché ni LLM
+  -> bucket + embedding de la descripción normalizada      (una sola vez por petición)
+  -> lookup en Redis dentro del bucket (distancia <= umbral)
+       hit válido y modo active -> respuesta con cached=true
+       miss / error / shadow    -> prompt + LLM + output guardrails
+  -> escritura en caché (último paso, solo si todo validó)  -> cached=false
+```
+
+**Clave compuesta.**
+
+- **Bucket determinista**: `prompt_version`, `tenant_id`, `project_type`,
+  `detail_level` y `output_format`, guardado como SHA-256 (sin escapes en
+  el TAG y sin identificadores en claro en Redis). Dos peticiones solo
+  comparten caché si coinciden en todo esto. Al promocionar una versión de
+  prompt, los buckets de la anterior quedan huérfanos y caducan por TTL: no
+  hay invalidación manual.
+- **Parte vectorial**: embedding de la descripción normalizada (NFKC y
+  espacios colapsados), con búsqueda por similitud **solo dentro del
+  bucket**.
+- **Tenant**: el servicio aún no es multi-tenant ni tiene autenticación, así
+  que todas las peticiones usan un tenant constante (`single-tenant`, en
+  [`app/request_context.py`](app/request_context.py)). Cuando haya
+  autenticación, el tenant debe salir del contexto autenticado, nunca del
+  body.
+
+**Garantías.**
+
+- **Input guardrails antes que el caché**: un hit nunca se salta la
+  moderación ni los filtros de entrada.
+- **Escritura solo tras los output guardrails** (schema, validadores de
+  negocio, PII): si algo falla o se agotan los reintentos, no se escribe
+  nada (evita envenenar el caché).
+- **Re-validación de los hits**: Redis no es fuente de confianza. Cada hit
+  se valida con `EstimationResult.model_validate_json` (con el umbral de
+  confianza actual); si no valida, cuenta como miss
+  (`result=invalid_entry`) y se sigue por el LLM.
+- **Fail-open**: si Redis o la API de embeddings fallan o superan su
+  timeout, la petición sigue por el LLM y se registra el error. Si Redis no
+  está disponible al arrancar, la API arranca igual y vuelve a intentar
+  conectar como mucho cada 30 s. Lo que sí impide arrancar es una
+  configuración inválida (p. ej. modo `shadow`/`active` sin `REDIS_URL`).
+- **Sin texto del usuario en Redis**: se guardan el vector, el bucket
+  hasheado y la respuesta ya validada. El campo `prompt` que exige redisvl
+  guarda un hash del vector, no la descripción.
+
+**Modos** (`SEMANTIC_CACHE_MODE`):
+
+| Modo | Embedding + lookup + escritura | Responde con |
+|---|---|---|
+| `off` | No | El LLM |
+| `shadow` (por defecto) | Sí | **Siempre el LLM** (`cached=false`) |
+| `active` | Sí | El caché si hay hit válido (`cached=true`); si no, el LLM |
+
+**Cómo interpretar el modo shadow.** Es el despliegue inicial: mide sin
+cambiar ninguna respuesta. En cada hit se registra
+`semantic_cache.shadow_comparison` con la distancia, la diferencia de horas
+totales entre lo cacheado y lo que acaba de responder el LLM
+(`total_hours_diff_pct`) y si coinciden en out-of-scope. Tras una semana:
+
+- La **tasa de hits** (`semantic_cache.lookup result=hit` frente a `miss`)
+  dice cuánto se ahorraría.
+- Si los hits con `total_hours_diff_pct` alto u `out_of_scope_match=false`
+  se concentran en las distancias más altas, el umbral es demasiado
+  permisivo: bájalo (`SEMANTIC_CACHE_DISTANCE_THRESHOLD`). Si apenas hay
+  hits y las diferencias son pequeñas, se puede subir con cuidado.
+- Con los datos, pasa a `SEMANTIC_CACHE_MODE=active`.
+
+Ten en cuenta que el LLM no es determinista: dos llamadas con la misma
+petición ya difieren algo (en las pruebas, entre un 10 y un 20 % en horas),
+así que no esperes `total_hours_diff_pct=0`.
+
+**Observabilidad** (logs estructurados, con `request_id`, `prompt_version`,
+`project_type` y `cache_mode`; nunca la descripción):
+
+| Evento | Campos |
+|---|---|
+| `semantic_cache.lookup` | `result` (`hit`, `miss`, `error`, `invalid_entry`), `distance`, `latency_ms`, `bucket` (prefijo del hash) |
+| `semantic_cache.embedding` / `semantic_cache.embedding_failed` | `latency_ms`, `error_type` |
+| `semantic_cache.store` | `result` (`ok`, `error`), `latency_ms` |
+| `semantic_cache.shadow_comparison` | `distance`, `total_hours_diff_pct`, `out_of_scope_match`, ... |
+| `estimation.generated` | `cached`, `llm_latency_ms`, ... |
+
+El repo no tiene Prometheus ni OpenTelemetry: las métricas del spec (tasa
+de hits, histograma de distancias, latencias) se obtienen agregando estos
+logs. Si se añade un sistema de métricas, estos puntos son donde
+instrumentar.
+
+**Requisitos de Redis.** Redis Stack (o Redis 8 con el Query Engine) por
+la búsqueda vectorial; `docker-compose.yml` levanta
+`redis/redis-stack-server:7.4.0-v6`. Fuera de local:
+
+- Sin exposición pública: red privada (en docker-compose no se publica
+  ningún puerto de Redis).
+- TLS (`rediss://`) y un usuario ACL con permisos mínimos sobre el prefijo
+  del índice (`estimation_cache:*`) y los comandos `FT.*`, `HSET`, `HGETALL`
+  y `EXPIRE`. La contraseña, en un gestor de secretos.
+- `REDIS_URL` es un `SecretStr`: nunca aparece en logs ni en errores.
+
+**Embeddings.** `text-embedding-3-small` de OpenAI con 1536 dimensiones
+(Anthropic no ofrece API de embeddings, así que hace falta una clave de
+OpenAI aunque el LLM sea Anthropic: `EMBEDDING_API_KEY` u
+`OPENAI_API_KEY`). Timeout de 1 s y sin reintentos. Al arrancar se hace una
+llamada de calentamiento con un texto fijo: sin ella, la primera conexión
+(DNS, TLS) supera a menudo el timeout y las primeras peticiones pierden el
+caché. **Si cambias de modelo o de dimensión, cambia también
+`SEMANTIC_CACHE_INDEX_NAME`**: un índice existente con otra dimensión no se
+sobrescribe (el caché queda no disponible y se registra el error).
+
+**TTL.** `SEMANTIC_CACHE_TTL_SECONDS` (24 h por defecto) es la política de
+retención. redisvl refresca el TTL de una entrada cada vez que da hit (TTL
+deslizante): una entrada consultada a menudo vive más de 24 h desde su
+creación. Las de versiones de prompt antiguas dejan de consultarse y
+caducan.
 
 ## Wrapper de proveedores LLM (LiteLLM)
 
@@ -449,6 +583,11 @@ puerto 8501) — cada uno con su propio comando de arranque.
 docker compose up --build -d
 ```
 
+Además de `api` y `chat`, levanta `redis` (Redis Stack para el caché
+semántico, sin puertos publicados). Necesita `REDIS_PASSWORD` en el `.env`
+(el compose falla con un mensaje claro si falta); la API recibe
+`REDIS_URL` construida a partir de ella.
+
 - API → http://localhost:8000/docs (o `/health`)
 - Cliente → http://localhost:8501
 
@@ -622,10 +761,23 @@ uv run pytest
   registra.
 - `tests/test_estimation_view.py`: presentación en el cliente (tabla,
   lista, narrativa) y la app Streamlit renderizando una estimación.
+- `tests/semantic_cache/`: el bucket (cambia con cada componente,
+  determinista) y la normalización; el servicio con dobles (input
+  guardrails antes del lookup, hit en active sin LLM, hit en shadow con LLM,
+  no se escribe si falla un output guardrail, fail-open de Redis y de
+  embeddings, entrada cacheada inválida = miss, un solo embedding por
+  petición, modo off sin embedding, aislamiento por tenant y versión); los
+  adaptadores (Redis inalcanzable con cooldown, embeddings con HTTP
+  simulado) y la **integración con Redis Stack real** (testcontainers):
+  reformulación = hit, otro formato/tenant/versión = miss, TTL aplicado,
+  creación del índice idempotente.
 
 Ningún test usa la red: los proveedores se simulan con `mock_response` /
-`mock_tool_calls` de LiteLLM y la Moderation API con un doble (o con el
-transporte HTTP simulado). No hacen falta API keys ni se consume saldo.
+`mock_tool_calls` de LiteLLM y la Moderation API y los embeddings con dobles
+(o con el transporte HTTP simulado). No hacen falta API keys ni se consume
+saldo. Los tests de integración (`-m integration`) levantan un contenedor
+de Redis Stack con Docker y se saltan si Docker no está disponible; para
+ejecutar solo los rápidos: `uv run pytest -m "not integration"`.
 
 ## CI
 

@@ -18,7 +18,10 @@ from app.guardrails.moderation import get_moderation_client
 from app.logging_config import configure_logging
 from app.prompts.loader import PromptVersionNotFoundError, validate_estimation_prompt_version
 from app.routers import estimations
+from app.embeddings import EmbeddingError, get_embedder
 from app.schemas import ErrorDetail, ErrorResponse
+from app.semantic_cache.factory import get_semantic_cache
+from app.semantic_cache.ports import CacheUnavailableError
 from app.services.llm_gateway import (
     AllProvidersFailedError,
     InvalidStructuredOutputError,
@@ -96,6 +99,27 @@ async def lifespan(_: FastAPI):
     gateway = get_llm_gateway()
     get_moderation_client()
     validate_estimation_prompt_version(settings.prompt_version)
+    # Caché semántico: configuración obligatoria si el modo no es off
+    # (fail fast), pero Redis caído no impide arrancar (fail-open): el
+    # índice se crea aquí si existe Redis y, si no, en la primera petición.
+    cache = get_semantic_cache()
+    embedder = get_embedder()
+    cache_ready = None
+    if hasattr(cache, "ensure_index"):
+        try:
+            cache.ensure_index()
+            cache_ready = True
+        except CacheUnavailableError as exc:
+            cache_ready = False
+            log.error("semantic_cache.unavailable_at_startup", error_type=str(exc))
+        # Calentamiento: la primera llamada a la API de embeddings (DNS, TLS,
+        # carga perezosa del SDK) supera a menudo EMBEDDING_TIMEOUT_MS y las
+        # primeras peticiones perderían el caché. Un texto fijo, sin datos
+        # de usuario; si falla, se registra y se sigue (fail-open).
+        try:
+            embedder.embed("warmup")
+        except EmbeddingError as exc:
+            log.warning("semantic_cache.embedder_warmup_failed", error_type=str(exc))
     log.info(
         "app.started",
         environment=settings.environment,
@@ -109,6 +133,8 @@ async def lifespan(_: FastAPI):
         },
         moderation_fail_closed=settings.moderation_fail_closed,
         min_confidence_pct=settings.min_confidence_pct,
+        semantic_cache_mode=settings.semantic_cache_mode.value,
+        semantic_cache_ready=cache_ready,
     )
     yield
 
