@@ -17,11 +17,13 @@ from app.guardrails.base import InputRejectedError, ModerationUnavailableError
 from app.guardrails.moderation import get_moderation_client
 from app.logging_config import configure_logging
 from app.prompts.loader import PromptVersionNotFoundError, validate_estimation_prompt_version
-from app.routers import estimations
+from app.routers import estimations, sessions
+from app.attachments import AttachmentError
 from app.embeddings import EmbeddingError, get_embedder
 from app.schemas import ErrorDetail, ErrorResponse
 from app.semantic_cache.factory import get_semantic_cache
 from app.semantic_cache.ports import CacheUnavailableError
+from app.sessions import SessionCapacityError, SessionNotFoundError
 from app.services.llm_gateway import (
     AllProvidersFailedError,
     InvalidStructuredOutputError,
@@ -34,6 +36,16 @@ log = structlog.get_logger(__name__)
 # Solo se acepta un X-Request-ID entrante con formato seguro; si no, se
 # genera uno nuevo (evita inyección de contenido arbitrario en los logs).
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+# Los session_id viajan en la ruta y son tokens de acceso: en los logs solo
+# se registra su prefijo.
+_UUID_IN_PATH_RE = re.compile(
+    r"([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
+)
+
+
+def _loggable_path(path: str) -> str:
+    return _UUID_IN_PATH_RE.sub(r"\1-…", path)
 
 
 class RequestContextMiddleware:
@@ -72,7 +84,7 @@ class RequestContextMiddleware:
             log.info(
                 "http.request",
                 method=scope["method"],
-                path=scope["path"],
+                path=_loggable_path(scope["path"]),
                 status_code=status_code,
                 duration_ms=round((time.perf_counter() - start) * 1000, 1),
             )
@@ -99,6 +111,7 @@ async def lifespan(_: FastAPI):
     gateway = get_llm_gateway()
     get_moderation_client()
     validate_estimation_prompt_version(settings.prompt_version)
+    validate_estimation_prompt_version(settings.session_prompt_version)
     # Caché semántico: configuración obligatoria si el modo no es off
     # (fail fast), pero Redis caído no impide arrancar (fail-open): el
     # índice se crea aquí si existe Redis y, si no, en la primera petición.
@@ -156,6 +169,7 @@ app = FastAPI(
 
 app.add_middleware(RequestContextMiddleware)
 app.include_router(estimations.router, prefix="/api/v1")
+app.include_router(sessions.router, prefix="/api/v1")
 
 
 # ------------------------------------------------------------------ errores
@@ -230,6 +244,30 @@ async def _invalid_estimation(_: Request, exc: InvalidStructuredOutputError) -> 
 async def _prompt_version_not_found(_: Request, exc: PromptVersionNotFoundError) -> JSONResponse:
     log.info("estimation.unknown_prompt_version", reason=str(exc))
     return _error(422, "invalid_prompt_version", "La versión de prompt pedida no existe.")
+
+
+@app.exception_handler(AttachmentError)
+async def _attachment_rejected(_: Request, exc: AttachmentError) -> JSONResponse:
+    # El motivo concreto (firma, tamaño, zip bomb...) solo va a los logs.
+    log.warning("session.attachment_rejected", code=exc.code, reason=exc.reason)
+    return _error(exc.status_code, exc.code, exc.message)
+
+
+@app.exception_handler(SessionNotFoundError)
+async def _session_not_found(_: Request, __: SessionNotFoundError) -> JSONResponse:
+    # Mismo mensaje para inexistente y expirada: no revela si existió.
+    return _error(404, "session_not_found", "La sesión no existe o ha expirado.")
+
+
+@app.exception_handler(SessionCapacityError)
+async def _sessions_exhausted(_: Request, __: SessionCapacityError) -> JSONResponse:
+    log.warning("session.capacity_reached")
+    return _error(
+        503,
+        "sessions_exhausted",
+        "El servicio no admite más conversaciones en este momento. Inténtalo más tarde.",
+        headers={"Retry-After": "60"},
+    )
 
 
 @app.exception_handler(Exception)

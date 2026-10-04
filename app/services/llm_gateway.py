@@ -266,11 +266,29 @@ class LLMGateway:
         validada de `response_model` (vía Instructor) en lugar de texto,
         con el mismo fallback, reintentos de transporte, caché y logs.
         `context` llega a los validadores del modelo (ValidationInfo.context)."""
-        messages = self._messages(system_prompt, user_message)
-        cache_key = self._cache_key(messages, response_model=response_model, context=context)
+        return self.complete_structured_messages(
+            self._messages(system_prompt, user_message), response_model, context=context
+        )
+
+    def complete_structured_messages(
+        self,
+        messages: list[dict],
+        response_model: type[M],
+        *,
+        context: dict[str, Any] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> M:
+        """Como `complete_structured`, pero con el array `messages` completo
+        (system + historial + turno actual), para conversaciones. Si el
+        proveedor quiere el system aparte (Anthropic), LiteLLM lo separa.
+        `temperature` y `max_tokens` sustituyen a los valores por defecto
+        solo en esta llamada (p. ej. el extractor de metadata)."""
+        overrides = {k: v for k, v in (("temperature", temperature), ("max_tokens", max_tokens)) if v is not None}
+        cache_key = self._cache_key(messages, response_model=response_model, context=context, overrides=overrides)
 
         def call(provider: ProviderConfig) -> tuple[Any, M]:
-            return self._call_structured(provider, messages, response_model, context)
+            return self._call_structured(provider, messages, response_model, context, overrides)
 
         response = self._complete(messages, cache_key, call)
         return response.parsed  # type: ignore[return-value]
@@ -373,13 +391,14 @@ class LLMGateway:
         messages: list[dict],
         response_model: type[M],
         context: dict[str, Any] | None,
+        overrides: dict[str, Any] | None = None,
     ) -> tuple[Any, M]:
         try:
             parsed, raw = self._structured.create_with_completion(
                 response_model=response_model,
                 context=context,
                 max_retries=self._validation_retries,
-                **self._request_kwargs(provider, messages),
+                **(self._request_kwargs(provider, messages) | (overrides or {})),
             )
         except InstructorRetryException as exc:
             # Instructor también envuelve los errores del proveedor: esos se
@@ -548,6 +567,7 @@ class LLMGateway:
         messages: list[dict],
         response_model: type[BaseModel] | None = None,
         context: dict[str, Any] | None = None,
+        overrides: dict[str, Any] | None = None,
     ) -> str:
         # Exact-match sobre todo lo que determina la respuesta: mensajes,
         # parámetros de generación, cadena de modelos y, en las llamadas
@@ -564,6 +584,7 @@ class LLMGateway:
                 # El contexto cambia qué respuestas validan (p. ej. el umbral
                 # de confianza): forma parte de la clave.
                 "validation_context": context,
+                "overrides": overrides or None,
             },
             sort_keys=True,
             ensure_ascii=False,

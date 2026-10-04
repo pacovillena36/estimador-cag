@@ -107,6 +107,34 @@ class Settings(BaseSettings):
     embedding_dimensions: int = Field(1536, ge=64, le=3072)
     embedding_timeout_ms: int = Field(1000, ge=100, le=10_000)
 
+    # --- Sesiones conversacionales (POST /sessions/{id}/estimate) ----------
+    # Versión del prompt de las sesiones (v4 = v3 + <project_metadata> y los
+    # bloques <transcript>/<attachment_content>). /estimate sigue con
+    # PROMPT_VERSION.
+    session_prompt_version: str = Field("v4", pattern=r"^v\d+$")
+    # Ventana deslizante: pares user+assistant previos que se envían al LLM.
+    max_turns: int = Field(6, ge=1, le=50)
+    # Memoria del proceso: expiración por inactividad y número máximo de
+    # sesiones vivas (al llegar al máximo, POST /sessions responde 503).
+    session_ttl_minutes: int = Field(60, ge=1, le=24 * 60)
+    max_sessions: int = Field(1000, ge=1, le=100_000)
+    max_transcript_chars: int = Field(20_000, ge=20, le=200_000)
+
+    # Adjuntos (PDF y DOCX), procesados en memoria.
+    max_attachments: int = Field(5, ge=0, le=20)
+    max_attachment_bytes: int = Field(10 * 1024 * 1024, ge=1024, le=50 * 1024 * 1024)
+    max_total_attachment_bytes: int = Field(25 * 1024 * 1024, ge=1024, le=200 * 1024 * 1024)
+    max_pdf_pages: int = Field(50, ge=1, le=1000)
+    # DOCX es un ZIP: límites contra zip bombs antes de abrirlo.
+    max_docx_uncompressed_bytes: int = Field(50 * 1024 * 1024, ge=1024, le=500 * 1024 * 1024)
+    max_docx_entries: int = Field(1000, ge=10, le=10_000)
+    # Texto extraído (por adjunto y total); lo que exceda se trunca.
+    max_attachment_chars: int = Field(20_000, ge=100, le=500_000)
+    max_total_attachment_chars: int = Field(50_000, ge=100, le=1_000_000)
+
+    # Extractor de project_metadata (segunda llamada al LLM por turno).
+    metadata_extractor_max_tokens: int = Field(512, ge=64, le=4096)
+
     # Caché exact-match de respuestas del LLM (en memoria, por proceso)
     llm_cache_enabled: bool = True
     llm_cache_ttl_seconds: int = 3600

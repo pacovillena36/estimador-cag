@@ -38,6 +38,10 @@ estimador-cag/
 │   │   └── factory.py            # get_semantic_cache() según la configuración
 │   ├── embeddings.py             # Cliente de embeddings (OpenAI) con timeout
 │   ├── request_context.py        # RequestContext (tenant) fuera del body
+│   ├── sessions.py               # ProjectMetadata, ConversationHistory, Session, SessionStore
+│   ├── attachments.py            # Validación y extracción de texto de PDF/DOCX
+│   ├── metadata_extractor.py     # Extractor LLM de project_metadata + merge
+│   ├── dependencies.py           # get_session_store, servicios de sesión (inyectables)
 │   ├── prompts/
 │   │   ├── loader.py             # render_estimation_prompt(request, version) -> (system, user)
 │   │   └── estimation/
@@ -46,6 +50,7 @@ estimador-cag/
 │   │       │   ├── user.j2       # Envuelve la descripción en <project_description>
 │   │       │   └── examples.j2   # Ejemplos few-shot (instancias de EstimationResult en JSON)
 │   │       ├── v2/               # Igual que v1 salvo el set de ejemplos
+│   │       ├── v4/               # Sesiones: <transcript>, <attachment_content>, <project_metadata>
 │   │       └── v3/               # v1 + sección <scope> (versión por defecto)
 │   ├── routers/
 │   │   └── estimations.py        # POST /api/v1/estimate (delgado: delega en el servicio)
@@ -56,6 +61,7 @@ estimador-cag/
 ├── tests/
 │   ├── guardrails/               # Normalización, injection, PII, moderación, pipeline
 │   ├── semantic_cache/           # Bucket, servicio con dobles, adaptadores e integración (Redis Stack)
+│   ├── sessions/                 # Sesiones: modelo, API, adjuntos, metadata y turnos con LLM falso
 │   ├── prompts/
 │   │   ├── test_estimation_v1.py # Tests de los templates (sin llamar a ningún modelo)
 │   │   └── test_estimation_v2.py
@@ -69,7 +75,7 @@ estimador-cag/
 ├── docker-compose.yml             # Servicios "api" (uvicorn) y "chat" (Streamlit)
 ├── ejemplo_peticion.json          # Petición de ejemplo para probar el endpoint
 ├── pyproject.toml
-├── streamlit_app.py               # Cliente Streamlit (formulario), cliente HTTP de la API
+├── streamlit_app.py               # Cliente Streamlit (conversación con sesiones), cliente HTTP de la API
 ├── estimation_view.py             # Presentación en el cliente: tabla, lista o narrativa
 └── README.md
 ```
@@ -399,6 +405,146 @@ deslizante): una entrada consultada a menudo vive más de 24 h desde su
 creación. Las de versiones de prompt antiguas dejan de consultarse y
 caducan.
 
+## Sesión 05: memoria conversacional, project_metadata y adjuntos
+
+Además de `POST /api/v1/estimate` (una sola petición, sin memoria), el
+servicio admite **conversaciones**: una sesión acumula turnos (transcripción
+de reunión + adjuntos) y un resumen de hechos del proyecto
+(`project_metadata`), y cada estimación tiene en cuenta los turnos
+anteriores.
+
+| Endpoint | Qué hace |
+|---|---|
+| `POST /api/v1/sessions` | Crea una sesión vacía → `201 {"session_id": "<uuid4>"}` |
+| `GET /api/v1/sessions/{id}` | `{"session_id", "project_metadata", "turns"}` (para el panel del cliente) |
+| `DELETE /api/v1/sessions/{id}` | Borra la sesión ("Nueva conversación") → `204` |
+| `POST /api/v1/sessions/{id}/estimate` | Un turno: `multipart/form-data` con `transcript` (obligatorio), `project_type` (obligatorio), `detail_level` y `output_format` (opcionales: `medium`, `phases_table`) y `attachments` (PDF/DOCX, opcional). Devuelve el mismo `EstimationResponse` de `/estimate` |
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/sessions
+curl -X POST http://127.0.0.1:8000/api/v1/sessions/<session_id>/estimate \
+  -F "transcript=Reunión de arranque del proyecto Orion..." \
+  -F "project_type=web_saas" \
+  -F "attachments=@requisitos.pdf"
+```
+
+**Flujo de un turno** ([`app/services/session_estimation.py`](app/services/session_estimation.py)),
+dentro de un `asyncio.Lock` por sesión (dos peticiones a la misma sesión no
+se intercalan):
+
+1. Lectura y validación de los adjuntos y extracción de su texto (en un
+   threadpool: es bloqueante).
+2. Guardrails de entrada (moderación, injection, PII) sobre la
+   transcripción y el texto de los adjuntos.
+3. Mensaje de usuario: `<transcript>…</transcript>` y, por cada adjunto,
+   `--- attachment: nombre ---` + `<attachment_content>…</attachment_content>`.
+4. System prompt (versión `v4`, `SESSION_PROMPT_VERSION`) regenerado con el
+   `project_metadata` actual.
+5. `messages = [system] + historial + [mensaje actual]` → LLM (el mismo
+   wrapper: timeout, reintentos, fallback y salida validada contra
+   `EstimationResult`; si no valida → `502` y **el historial no cambia**) →
+   guardrails de salida.
+6. Se guarda el turno en el historial y se actualiza `project_metadata`.
+
+El historial solo avanza con turnos completados. No usa el caché
+semántico: con historial, dos transcripciones parecidas no son peticiones
+equivalentes.
+
+**Adjuntos: camino B, extracción local** ([`app/attachments.py`](app/attachments.py)),
+con `pypdf` (PDF; licencia BSD, se descartó PyMuPDF por ser AGPL) y
+`python-docx` (Word). Independiente del proveedor LLM, con control sobre el
+tamaño y el contenido (se valida y se sanea antes de llegar al prompt), y
+prepara el chunking de RAG de módulos posteriores. Todo en memoria, sin
+escribir a disco. Validaciones:
+
+- Número de archivos y tamaño por archivo y total, leyendo en bloques (no
+  se confía en `Content-Length`) → `413`.
+- Tipo real: extensión `.pdf`/`.docx` **y** firma de bytes (`%PDF-` /
+  `PK\x03\x04`); no se confía en el `content_type` → `415`.
+- DOCX (un ZIP): antes de abrirlo, número de entradas y tamaño
+  descomprimido total (zip bombs) → `413`.
+- PDF cifrado o corrupto → `422`; solo se procesan las primeras
+  `MAX_PDF_PAGES` páginas.
+- Texto extraído limitado por adjunto y en total, con la marca
+  `[... contenido truncado ...]`.
+- Nombre de archivo: solo el nombre base, sin caracteres de control y con
+  longitud acotada.
+- **Prompt injection**: el system prompt indica que `<transcript>`,
+  `<attachment_content>` y `<project_metadata>` son datos, no
+  instrucciones, y las etiquetas delimitadoras que aparezcan en el
+  contenido se neutralizan (un documento no puede "cerrar" su bloque).
+
+**`project_metadata`: extractor LLM** ([`app/metadata_extractor.py`](app/metadata_extractor.py)).
+Tras cada turno, una segunda llamada al LLM (salida estructurada con
+Instructor, `response_model=ProjectMetadata`, `temperature=0`,
+`max_tokens` acotado) recibe el metadata actual, el último mensaje del
+usuario y la última estimación, y devuelve `project_name`,
+`assumed_team_size`, `mentioned_technologies` y `agreed_scope`. Se eligió
+frente a regex porque es más robusto ante el lenguaje natural de una
+reunión. **Coste**: una llamada extra por turno (en las pruebas, entre 1 y
+2 s y unos cientos de tokens). Se fusiona con reglas (escalares solo si el
+nuevo valor no es nulo; tecnologías como unión sin duplicados; alcance
+reemplazado si no está vacío) y todo se valida con `ProjectMetadata`
+(`extra="forbid"`, límites de longitud) antes de entrar en la sesión.
+**Si el extractor falla** (timeout, proveedor caído, salida inválida), la
+estimación responde igual (`200`), se registra un warning sin contenido de
+la conversación y se conserva el metadata anterior.
+
+El metadata se inyecta en el system prompt como JSON dentro de
+`<project_metadata>` (vacío en el primer turno), con la instrucción de que,
+si la transcripción actual lo contradice, prevalece la transcripción.
+
+**Turno e historial efectivo.** Un turno es un par user + assistant (el
+mensaje de usuario completo, con adjuntos, y la estimación en JSON). El
+**historial efectivo** es el número de pares previos que se envían al LLM:
+siempre `≤ MAX_TURNS` (6 por defecto). A ellos se suman el system prompt
+(posición 0, regenerado en cada llamada, nunca se descarta) y el mensaje
+del turno actual. Al superar el límite se descartan los pares más antiguos.
+`MAX_TURNS` se configura por entorno.
+
+**Límites configurables** (`.env`, ver `.env.example`):
+
+| Variable | Por defecto |
+|---|---|
+| `MAX_TURNS` | 6 |
+| `SESSION_TTL_MINUTES` (expiración por inactividad) | 60 |
+| `MAX_SESSIONS` (al llegar, `POST /sessions` → `503`) | 1000 |
+| `MAX_TRANSCRIPT_CHARS` | 20 000 |
+| `MAX_ATTACHMENTS` | 5 |
+| `MAX_ATTACHMENT_BYTES` / `MAX_TOTAL_ATTACHMENT_BYTES` | 10 MB / 25 MB |
+| `MAX_PDF_PAGES` | 50 |
+| `MAX_DOCX_UNCOMPRESSED_BYTES` / `MAX_DOCX_ENTRIES` | 50 MB / 1000 |
+| `MAX_ATTACHMENT_CHARS` / `MAX_TOTAL_ATTACHMENT_CHARS` | 20 000 / 50 000 |
+| `METADATA_EXTRACTOR_MAX_TOKENS` | 512 |
+
+Con `MAX_SESSIONS` alcanzado se rechaza con `503` en lugar de expulsar la
+sesión más antigua, que podría ser la conversación activa de otro usuario.
+
+**Limitaciones conocidas:**
+
+- **Memoria volátil**: las sesiones viven en un diccionario del proceso y
+  se pierden al reiniciar (el cliente crea una nueva al recibir `404`).
+- **Un solo worker**: con varios workers cada uno tendría su propio
+  diccionario. Ejecutar uvicorn sin `--workers`. La persistencia (Redis,
+  BBDD) queda para fases posteriores.
+- **Sin autenticación**: el `session_id` (uuid4 aleatorio) es el único
+  control de acceso a una conversación. No se registra completo en los logs
+  (ni siquiera en la ruta de `http.request`).
+- **Sin presupuesto de tokens**: los límites de caracteres y la ventana
+  acotan el peor caso, pero no se cuentan tokens; con adjuntos grandes y 6
+  turnos se puede acercar al contexto del modelo.
+- **CORS**: no se configura porque el cliente Streamlit llama a la API
+  desde su servidor, no desde el navegador. Si se añade un frontend web,
+  hay que restringirlo a sus orígenes.
+- **Rate limiting** por IP/sesión (p. ej. `slowapi`): pendiente como mejora
+  futura; cada turno cuesta dos llamadas al LLM.
+
+**Ejecución.** Igual que el resto del servicio: `uv run uvicorn app.main:app`
+(o `uv run python -m uvicorn app.main:app` si App Control bloquea
+`uvicorn.exe`) y `uv run streamlit run streamlit_app.py`. Tests:
+`uv run pytest` (los de sesiones están en `tests/sessions/` y no usan red
+ni claves: un LLM falso se inyecta con `app.dependency_overrides`).
+
 ## Wrapper de proveedores LLM (LiteLLM)
 
 Los endpoints no hablan con OpenAI ni con Anthropic: llaman a
@@ -678,18 +824,24 @@ Todos los errores (salvo el 422 de validación) usan el mismo schema
 > El antiguo `POST /api/v1/estimate/stream` (SSE con texto) se ha eliminado:
 > con salida estructurada un JSON a medias no se puede mostrar ni validar.
 
-## Cliente Streamlit (formulario)
+## Cliente Streamlit (conversación)
 
-[`streamlit_app.py`](streamlit_app.py) es un formulario (`st.form`) con la
-descripción del proyecto y tres desplegables (tipo de proyecto, nivel de
-detalle y formato de salida). Al pulsar **Enviar**:
+[`streamlit_app.py`](streamlit_app.py) es una conversación con el servicio
+(sesiones, ver "Sesión 05"):
 
-1. Construye un `EstimationRequest` con las clases de `app/schemas.py`, así
-   que los errores (p. ej. descripción demasiado corta) se muestran sin
-   llegar a llamar a la API.
-2. Hace `POST /api/v1/estimate` con ese JSON al servicio IA en
-   `API_BASE_URL`.
-3. Muestra los totales (horas, semanas, coste y confianza) y pinta
+1. Al cargar crea una sesión (`POST /api/v1/sessions`) y guarda el
+   `session_id` en `st.session_state`.
+2. Cada envío es un turno: transcripción (`st.text_area`), adjuntos PDF/DOCX
+   (`st.file_uploader`) y los desplegables de tipo, nivel de detalle y
+   formato, enviados como multipart a `POST /api/v1/sessions/{id}/estimate`
+   (timeout explícito).
+3. El panel lateral muestra el `project_metadata` y los turnos en historial
+   (`GET /api/v1/sessions/{id}` tras cada turno). **Nueva conversación**
+   borra la sesión y crea otra. Si la sesión ha expirado o el servicio se
+   ha reiniciado (`404`), crea una nueva, avisa con `st.warning` y reenvía
+   el turno. Los errores `413`, `415` y `422` se muestran con mensajes
+   comprensibles, nunca con trazas.
+4. Muestra cada turno (el último desplegado) con los totales (horas, semanas, coste y confianza) y pinta
    `result` según el formato elegido: tabla por fases, lista de partidas o
    texto narrativo ([`estimation_view.py`](estimation_view.py)). Añadir un
    formato nuevo es añadir una función ahí, sin tocar el servicio IA. Si

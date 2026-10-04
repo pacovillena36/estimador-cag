@@ -2,6 +2,7 @@
 tabla, lista o narrativa según el formato elegido en el formulario."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from streamlit.testing.v1 import AppTest
@@ -15,6 +16,7 @@ from app.schemas import (
     OutputFormat,
     ProjectType,
 )
+from app.sessions import ProjectMetadata, SessionState
 from estimation_view import plain, render
 from tests.conftest import VALID_RESULT
 
@@ -67,27 +69,38 @@ def test_model_text_cannot_inject_markdown():
     assert plain("a\nb") == "a b"
 
 
-def _app_with(response: EstimationResponse, output_format=OutputFormat.PHASES_TABLE) -> AppTest:
+SESSION_ID = "6f1c1d1e-1234-4000-8000-000000000000"
+
+
+def _turn(response: EstimationResponse, output_format=OutputFormat.PHASES_TABLE, attachments=()):
+    # Mismos atributos que streamlit_app.Turn (la app es un script).
+    return SimpleNamespace(
+        transcript="Portal interno para reservar salas y puestos de trabajo.",
+        attachment_names=list(attachments),
+        project_type=ProjectType.INTERNAL_TOOL,
+        detail_level=DetailLevel.MEDIUM,
+        output_format=output_format,
+        response=response,
+    )
+
+
+def _app_with(*turns, session_info: SessionState | None = None) -> AppTest:
+    """App con una sesión ya creada (session_id en session_state): no hace
+    ninguna llamada HTTP al cargar."""
     app = AppTest.from_file(str(APP_PATH))
-    app.session_state["last_estimation"] = {
-        "request": EstimationRequest(
-            description="Portal interno para reservar salas y puestos de trabajo.",
-            project_type=ProjectType.INTERNAL_TOOL,
-            detail_level=DetailLevel.MEDIUM,
-            output_format=output_format,
-        ),
-        "response": response,
-    }
+    app.session_state["session_id"] = SESSION_ID
+    app.session_state["turns"] = list(turns)
+    app.session_state["session_info"] = session_info
     app.run()
     return app
 
 
 @pytest.mark.parametrize("output_format", list(OutputFormat))
 def test_streamlit_app_renders_the_last_estimation(output_format):
-    app = _app_with(EstimationResponse(result=RESULT, prompt_version="v3"), output_format)
+    app = _app_with(_turn(EstimationResponse(result=RESULT, prompt_version="v4"), output_format))
 
     assert not app.exception
-    assert [m.value for m in app.metric] == ["120", "6", "6.600 €", "75 %"]
+    assert [m.value for m in app.main.metric] == ["120", "6", "6.600 €", "75 %"]
     assert any(plain(RESULT.summary) in md.value for md in app.markdown)
 
 
@@ -100,9 +113,26 @@ def test_streamlit_app_shows_out_of_scope_as_a_warning():
         confidence_pct=0,
         phases=[],
     )
-    app = _app_with(EstimationResponse(result=out_of_scope, prompt_version="v3"))
+    app = _app_with(_turn(EstimationResponse(result=out_of_scope, prompt_version="v4")))
 
     assert not app.exception
-    assert len(app.metric) == 0
+    assert len(app.main.metric) == 0
     (warning,) = app.warning
     assert "no es un proyecto de software" in warning.value
+
+
+def test_streamlit_app_shows_turns_and_project_metadata_in_the_sidebar():
+    response = EstimationResponse(result=RESULT, prompt_version="v4")
+    info = SessionState(
+        session_id=SESSION_ID,
+        project_metadata=ProjectMetadata(project_name="Atlas", mentioned_technologies=["React", "Kafka"]),
+        turns=2,
+    )
+    app = _app_with(_turn(response), _turn(response, attachments=["requisitos.pdf"]), session_info=info)
+
+    assert not app.exception
+    assert [m.value for m in app.sidebar.metric] == ["2"]
+    sidebar_text = " ".join(md.value for md in app.sidebar.markdown)
+    assert "Atlas" in sidebar_text and "React, Kafka" in sidebar_text
+    labels = [e.label for e in app.expander]
+    assert labels[0].startswith("Turno 2") and labels[1].startswith("Turno 1")

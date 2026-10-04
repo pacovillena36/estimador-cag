@@ -60,6 +60,9 @@ def configure_logging(settings: Settings) -> None:
         uvicorn_logger = logging.getLogger(name)
         uvicorn_logger.handlers = []
         uvicorn_logger.propagate = True
+    # El access log de uvicorn es redundante con http.request (middleware) y
+    # registraría la ruta completa, con el session_id (un token de acceso).
+    logging.getLogger("uvicorn.access").disabled = True
 
     # LiteLLM en DEBUG/INFO puede volcar el contenido de los mensajes
     # (transcripciones del cliente): lo limitamos a avisos y errores.
