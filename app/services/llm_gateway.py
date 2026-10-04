@@ -232,9 +232,13 @@ class LLMGateway:
         self._validation_retries = validation_retries
         # El lambda resuelve litellm.completion en cada llamada (no al crear
         # el cliente), así los tests pueden sustituirlo con monkeypatch.
-        self._structured = structured_client or instructor.from_litellm(
-            lambda **kwargs: litellm.completion(**kwargs), mode=instructor.Mode.TOOLS
-        )
+        if structured_client is None:
+            structured_client = instructor.from_litellm(
+                lambda **kwargs: litellm.completion(**kwargs), mode=instructor.Mode.TOOLS
+            )
+            # Cada respuesta que no valida y se reenvía al modelo (FIX_RETRY).
+            structured_client.on("parse:error", _log_validation_retry)
+        self._structured = structured_client
 
     @property
     def provider_names(self) -> list[str]:
@@ -251,16 +255,22 @@ class LLMGateway:
         return self._complete(messages, self._cache_key(messages), call)
 
     def complete_structured(
-        self, system_prompt: str, user_message: str, response_model: type[M]
+        self,
+        system_prompt: str,
+        user_message: str,
+        response_model: type[M],
+        *,
+        context: dict[str, Any] | None = None,
     ) -> M:
         """Como `complete`, pero el modelo responde con una instancia
         validada de `response_model` (vía Instructor) en lugar de texto,
-        con el mismo fallback, reintentos de transporte, caché y logs."""
+        con el mismo fallback, reintentos de transporte, caché y logs.
+        `context` llega a los validadores del modelo (ValidationInfo.context)."""
         messages = self._messages(system_prompt, user_message)
-        cache_key = self._cache_key(messages, response_model=response_model)
+        cache_key = self._cache_key(messages, response_model=response_model, context=context)
 
         def call(provider: ProviderConfig) -> tuple[Any, M]:
-            return self._call_structured(provider, messages, response_model)
+            return self._call_structured(provider, messages, response_model, context)
 
         response = self._complete(messages, cache_key, call)
         return response.parsed  # type: ignore[return-value]
@@ -358,11 +368,16 @@ class LLMGateway:
         self._raise_all_failed(ctx)
 
     def _call_structured(
-        self, provider: ProviderConfig, messages: list[dict], response_model: type[M]
+        self,
+        provider: ProviderConfig,
+        messages: list[dict],
+        response_model: type[M],
+        context: dict[str, Any] | None,
     ) -> tuple[Any, M]:
         try:
             parsed, raw = self._structured.create_with_completion(
                 response_model=response_model,
+                context=context,
                 max_retries=self._validation_retries,
                 **self._request_kwargs(provider, messages),
             )
@@ -529,7 +544,10 @@ class LLMGateway:
         ]
 
     def _cache_key(
-        self, messages: list[dict], response_model: type[BaseModel] | None = None
+        self,
+        messages: list[dict],
+        response_model: type[BaseModel] | None = None,
+        context: dict[str, Any] | None = None,
     ) -> str:
         # Exact-match sobre todo lo que determina la respuesta: mensajes,
         # parámetros de generación, cadena de modelos y, en las llamadas
@@ -543,6 +561,9 @@ class LLMGateway:
                 "response_schema": (
                     response_model.model_json_schema() if response_model else None
                 ),
+                # El contexto cambia qué respuestas validan (p. ej. el umbral
+                # de confianza): forma parte de la clave.
+                "validation_context": context,
             },
             sort_keys=True,
             ensure_ascii=False,
@@ -683,6 +704,11 @@ class LLMGateway:
         raise AllProvidersFailedError(
             f"Todos los proveedores LLM han fallado: {', '.join(self.provider_names)}"
         )
+
+
+def _log_validation_retry(error: Exception) -> None:
+    # Solo el tipo de error: el mensaje puede citar la salida del modelo.
+    log.info("llm.validation_retry", error_type=type(error).__name__)
 
 
 @lru_cache

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, TemplateNotFound
 
-from app.schemas import EstimationRequest
+from app.schemas import DEFAULT_MIN_CONFIDENCE_PCT, OUT_OF_SCOPE_PREFIX, EstimationRequest
 
 PROMPTS_DIR = Path(__file__).parent
 DEFAULT_VERSION = "v1"
@@ -19,10 +19,12 @@ DEFAULT_VERSION = "v1"
 # configuración se use para leer rutas arbitrarias del disco.
 _VERSION_RE = re.compile(r"^v\d+$")
 
-# Etiquetas que delimitan la entrada del usuario en user.j2. Si la
-# descripción las contiene, se neutralizan para que el usuario no pueda
-# "cerrar" el bloque y colar texto que parezca instrucciones fuera de él.
-_DELIMITER_RE = re.compile(r"</?\s*project_description\s*>", re.IGNORECASE)
+# La descripción va delimitada por <project_description> en user.j2. Se
+# neutralizan TODOS los "<" y ">" (por comillas angulares, que no forman
+# etiquetas) para que el usuario no pueda cerrar el bloque ni inyectar
+# etiquetas de rol (<system>...), aunque el detector de prompt injection
+# esté en LOG_ONLY.
+_ANGLE_BRACKETS = str.maketrans({"<": "‹", ">": "›"})
 
 _env = Environment(
     loader=FileSystemLoader(PROMPTS_DIR),
@@ -51,7 +53,7 @@ def _template_dir(name: str, version: str) -> str:
 
 
 def _sanitize_user_text(text: str) -> str:
-    return _DELIMITER_RE.sub("[etiqueta eliminada]", text)
+    return text.translate(_ANGLE_BRACKETS)
 
 
 def validate_estimation_prompt_version(version: str = DEFAULT_VERSION) -> None:
@@ -68,13 +70,20 @@ def validate_estimation_prompt_version(version: str = DEFAULT_VERSION) -> None:
 
 
 def render_estimation_prompt(
-    request: EstimationRequest, version: str = DEFAULT_VERSION
+    request: EstimationRequest,
+    version: str = DEFAULT_VERSION,
+    *,
+    min_confidence_pct: int = DEFAULT_MIN_CONFIDENCE_PCT,
 ) -> tuple[str, str]:
     """Devuelve (system, user) listos para enviar al modelo como mensajes
     separados con role "system" y role "user"."""
     prompt_dir = _template_dir("estimation", version)
     context = {
         "prompt_dir": prompt_dir,
+        # Compartidos con los validadores de EstimationResult (una sola
+        # definición): las versiones con sección de alcance los usan.
+        "out_of_scope_prefix": OUT_OF_SCOPE_PREFIX,
+        "min_confidence_pct": min_confidence_pct,
         "description": _sanitize_user_text(request.description),
         "project_type": request.project_type.value,
         "detail_level": request.detail_level.value,

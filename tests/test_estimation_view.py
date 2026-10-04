@@ -7,6 +7,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from app.schemas import (
+    OUT_OF_SCOPE_PREFIX,
     DetailLevel,
     EstimationRequest,
     EstimationResponse,
@@ -14,7 +15,7 @@ from app.schemas import (
     OutputFormat,
     ProjectType,
 )
-from estimation_view import render
+from estimation_view import plain, render
 from tests.conftest import VALID_RESULT
 
 APP_PATH = Path(__file__).parent.parent / "streamlit_app.py"
@@ -54,8 +55,19 @@ def test_pipes_in_model_text_do_not_break_the_table():
     assert "A\\|B" in render(result, OutputFormat.PHASES_TABLE, DetailLevel.SUMMARY)
 
 
-@pytest.mark.parametrize("output_format", list(OutputFormat))
-def test_streamlit_app_renders_the_last_estimation(output_format):
+def test_model_text_cannot_inject_markdown():
+    """La salida del LLM no es de confianza: se pinta como texto plano."""
+    hostile = RESULT.model_copy(
+        update={"summary": "Ver [aquí](http://evil.example) ![x](http://evil.example/p.png)\n# Título <b>"}
+    )
+    for output_format in OutputFormat:
+        text = render(hostile, output_format, DetailLevel.MEDIUM)
+        assert "](" not in text.replace("\\]\\(", "")
+        assert "\n# " not in text and "<b>" not in text
+    assert plain("a\nb") == "a b"
+
+
+def _app_with(response: EstimationResponse, output_format=OutputFormat.PHASES_TABLE) -> AppTest:
     app = AppTest.from_file(str(APP_PATH))
     app.session_state["last_estimation"] = {
         "request": EstimationRequest(
@@ -64,10 +76,33 @@ def test_streamlit_app_renders_the_last_estimation(output_format):
             detail_level=DetailLevel.MEDIUM,
             output_format=output_format,
         ),
-        "response": EstimationResponse(result=RESULT, prompt_version="v1"),
+        "response": response,
     }
     app.run()
+    return app
+
+
+@pytest.mark.parametrize("output_format", list(OutputFormat))
+def test_streamlit_app_renders_the_last_estimation(output_format):
+    app = _app_with(EstimationResponse(result=RESULT, prompt_version="v3"), output_format)
 
     assert not app.exception
     assert [m.value for m in app.metric] == ["120", "6", "6.600 €", "75 %"]
-    assert any(RESULT.summary in md.value for md in app.markdown)
+    assert any(plain(RESULT.summary) in md.value for md in app.markdown)
+
+
+def test_streamlit_app_shows_out_of_scope_as_a_warning():
+    out_of_scope = EstimationResult(
+        summary=f"{OUT_OF_SCOPE_PREFIX} no es un proyecto de software.",
+        total_hours=0,
+        total_duration_weeks=0,
+        total_cost_eur=0,
+        confidence_pct=0,
+        phases=[],
+    )
+    app = _app_with(EstimationResponse(result=out_of_scope, prompt_version="v3"))
+
+    assert not app.exception
+    assert len(app.metric) == 0
+    (warning,) = app.warning
+    assert "no es un proyecto de software" in warning.value

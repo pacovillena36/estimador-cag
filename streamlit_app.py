@@ -22,7 +22,7 @@ from app.schemas import (
     OutputFormat,
     ProjectType,
 )
-from estimation_view import render
+from estimation_view import plain, render
 
 
 def _api_base_url() -> str:
@@ -82,6 +82,25 @@ def _validation_messages(exc: ValidationError) -> list[str]:
     return messages
 
 
+def _error_message(response: httpx2.Response) -> str:
+    """Mensaje para el usuario. La API devuelve {"error": {"code",
+    "message", "request_id"}} con un mensaje genérico (nunca detalles
+    internos), y en los 422 de validación {"detail": [...]}."""
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    if isinstance(error := body.get("error"), dict) and error.get("message"):
+        message = error["message"]
+        if error.get("request_id"):
+            message += f" (referencia: {error['request_id']})"
+        return message
+    detail = body.get("detail")
+    if isinstance(detail, list):
+        return "; ".join(item.get("msg", "") for item in detail)
+    return detail or f"El servicio respondió {response.status_code}."
+
+
 def request_estimation(request: EstimationRequest) -> EstimationResponse:
     """POST /api/v1/estimate con el EstimationRequest serializado a JSON."""
     try:
@@ -96,15 +115,7 @@ def request_estimation(request: EstimationRequest) -> EstimationResponse:
         ) from exc
 
     if response.status_code >= 400:
-        # La API devuelve un "detail" pensado para el usuario (sin detalles
-        # internos del proveedor); en los 422 es una lista de errores.
-        try:
-            detail = response.json().get("detail")
-        except ValueError:
-            detail = None
-        if isinstance(detail, list):
-            detail = "; ".join(item.get("msg", "") for item in detail)
-        raise EstimationAPIError(detail or f"El servicio respondió {response.status_code}.")
+        raise EstimationAPIError(_error_message(response))
 
     return EstimationResponse.model_validate(response.json())
 
@@ -182,6 +193,15 @@ if last := st.session_state.get("last_estimation"):
         f"prompt {response.prompt_version}"
     )
     result = response.result
+    if response.out_of_scope:
+        # El modelo no ha podido estimar: se muestra su explicación (como
+        # texto plano) en lugar de una estimación con todo a cero.
+        st.warning(
+            "No se ha podido estimar este proyecto con la información "
+            f"disponible.\n\n{plain(result.summary)}",
+            icon="⚠️",
+        )
+        st.stop()
     hours, weeks, cost, confidence = st.columns(4)
     hours.metric("Horas", result.total_hours)
     weeks.metric("Semanas", result.total_duration_weeks)

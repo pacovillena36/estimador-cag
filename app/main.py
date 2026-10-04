@@ -7,13 +7,18 @@ from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.config import settings
+from app.guardrails.base import InputRejectedError, ModerationUnavailableError
+from app.guardrails.moderation import get_moderation_client
 from app.logging_config import configure_logging
 from app.prompts.loader import PromptVersionNotFoundError, validate_estimation_prompt_version
 from app.routers import estimations
+from app.schemas import ErrorDetail, ErrorResponse
 from app.services.llm_gateway import (
     AllProvidersFailedError,
     InvalidStructuredOutputError,
@@ -84,15 +89,26 @@ class UTF8JSONResponse(JSONResponse):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # Fail fast: la API no arranca si no hay ningún proveedor con API key
-    # o si la versión de prompt configurada no existe.
+    # Fail fast: la API no arranca si no hay ningún proveedor con API key,
+    # si falta la clave de la Moderation API o si la versión de prompt
+    # configurada no existe. Los valores de Settings (tipos, rangos, modos
+    # de guardrail) ya se validan al importar app.config.
     gateway = get_llm_gateway()
+    get_moderation_client()
     validate_estimation_prompt_version(settings.prompt_version)
     log.info(
         "app.started",
         environment=settings.environment,
         llm_providers=gateway.provider_names,
         prompt_version=settings.prompt_version,
+        guardrail_modes={
+            "moderation": settings.guardrail_moderation_mode.value,
+            "prompt_injection": settings.guardrail_injection_mode.value,
+            "pii_input": settings.guardrail_pii_input_mode.value,
+            "pii_output": settings.guardrail_pii_output_mode.value,
+        },
+        moderation_fail_closed=settings.moderation_fail_closed,
+        min_confidence_pct=settings.min_confidence_pct,
     )
     yield
 
@@ -103,10 +119,11 @@ app = FastAPI(
         "API para generar estimaciones de proyectos de software a partir de "
         "la descripción del proyecto, su tipo, el nivel de detalle y el "
         "formato de salida deseados. Los prompts son templates Jinja2 "
-        "versionados con ejemplos few-shot, y la respuesta del modelo es una "
-        "estimación estructurada validada con Pydantic (Instructor)."
+        "versionados con ejemplos few-shot, la respuesta del modelo es una "
+        "estimación estructurada validada con Pydantic (Instructor) y la "
+        "petición pasa por un pipeline de guardrails de input y de output."
     ),
-    version="0.4.0",
+    version="0.5.0",
     default_response_class=UTF8JSONResponse,
     lifespan=lifespan,
 )
@@ -115,13 +132,61 @@ app.add_middleware(RequestContextMiddleware)
 app.include_router(estimations.router, prefix="/api/v1")
 
 
-# Los errores del LLM se traducen a respuestas genéricas: el detalle
-# (proveedor, código, mensaje) queda en los logs, nunca en la respuesta.
+# ------------------------------------------------------------------ errores
+#
+# Todos los errores se traducen aquí, con un cuerpo único (ErrorResponse) y
+# mensajes genéricos. El detalle interno (proveedor, guardrail o patrón que
+# disparó, trazas) va solo a los logs, nunca al cliente: le enseñaría a un
+# atacante cómo esquivar los filtros.
+
+
+def _request_id() -> str | None:
+    return structlog.contextvars.get_contextvars().get("request_id")
+
+
+def _error(status_code: int, code: str, message: str, headers: dict[str, str] | None = None) -> JSONResponse:
+    body = ErrorResponse(error=ErrorDetail(code=code, message=message, request_id=_request_id()))
+    return UTF8JSONResponse(status_code=status_code, content=body.model_dump(), headers=headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def _request_validation_failed(_: Request, exc: RequestValidationError) -> JSONResponse:
+    # Formato estándar de FastAPI ({"detail": [...]}) pero sin el campo
+    # "input": no se devuelve el eco de lo enviado (p. ej. la descripción).
+    errors = [{k: v for k, v in error.items() if k != "input"} for error in exc.errors()]
+    log.info(
+        "request.invalid",
+        errors=[f"{'.'.join(map(str, e['loc']))}: {e['type']}" for e in errors],
+    )
+    return UTF8JSONResponse(
+        status_code=422,
+        content=jsonable_encoder({"detail": errors, "request_id": _request_id()}),
+    )
+
+
+@app.exception_handler(InputRejectedError)
+async def _input_rejected(_: Request, exc: InputRejectedError) -> JSONResponse:
+    # El guardrail ya ha registrado qué disparó (guardrail.evaluated).
+    log.warning("estimation.input_rejected", guardrail=exc.guardrail)
+    return _error(400, "input_rejected", "No se ha podido procesar la descripción.")
+
+
+@app.exception_handler(ModerationUnavailableError)
+async def _moderation_unavailable(_: Request, __: ModerationUnavailableError) -> JSONResponse:
+    return _error(
+        503,
+        "moderation_unavailable",
+        "El servicio no está disponible temporalmente. Inténtalo más tarde.",
+        headers={"Retry-After": "30"},
+    )
+
+
 @app.exception_handler(AllProvidersFailedError)
 async def _all_providers_failed(_: Request, __: AllProvidersFailedError) -> JSONResponse:
-    return UTF8JSONResponse(
-        status_code=503,
-        content={"detail": "El servicio de IA no está disponible temporalmente. Inténtalo más tarde."},
+    return _error(
+        503,
+        "llm_unavailable",
+        "El servicio de IA no está disponible temporalmente. Inténtalo más tarde.",
         headers={"Retry-After": "30"},
     )
 
@@ -130,10 +195,7 @@ async def _all_providers_failed(_: Request, __: AllProvidersFailedError) -> JSON
 @app.exception_handler(InvalidStructuredOutputError)
 async def _invalid_estimation(_: Request, exc: InvalidStructuredOutputError) -> JSONResponse:
     log.warning("estimation.invalid", reason=str(exc))
-    return UTF8JSONResponse(
-        status_code=502,
-        content={"detail": "El modelo no devolvió una estimación válida. Inténtalo de nuevo."},
-    )
+    return _error(502, "estimation_failed", "El modelo no devolvió una estimación válida. Inténtalo de nuevo.")
 
 
 # La versión configurada se valida al arrancar, así que este error solo
@@ -141,10 +203,14 @@ async def _invalid_estimation(_: Request, exc: InvalidStructuredOutputError) -> 
 @app.exception_handler(PromptVersionNotFoundError)
 async def _prompt_version_not_found(_: Request, exc: PromptVersionNotFoundError) -> JSONResponse:
     log.info("estimation.unknown_prompt_version", reason=str(exc))
-    return UTF8JSONResponse(
-        status_code=422,
-        content={"detail": "La versión de prompt pedida no existe."},
-    )
+    return _error(422, "invalid_prompt_version", "La versión de prompt pedida no existe.")
+
+
+@app.exception_handler(Exception)
+async def _unexpected_error(_: Request, exc: Exception) -> JSONResponse:
+    # Cualquier otro error: traza en los logs, mensaje genérico al cliente.
+    log.exception("request.unhandled_error", error_type=type(exc).__name__)
+    return _error(500, "internal_error", "Error interno. Inténtalo de nuevo más tarde.")
 
 
 @app.get("/health", tags=["health"])

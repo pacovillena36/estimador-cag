@@ -4,8 +4,14 @@ El servicio IA devuelve siempre la estimación estructurada
 (EstimationResult); cómo se pinta lo decide el cliente. Añadir un formato
 nuevo es añadir una función aquí, sin tocar el servicio IA. Son funciones
 puras (EstimationResult -> Markdown) para poder probarlas sin Streamlit.
+
+La salida del LLM no es de confianza: todo el texto que viene del modelo
+(summary, nombres de fase, asunciones) se escapa con `plain()` antes de
+meterlo en el Markdown, para que se muestre como texto plano y no pueda
+inyectar enlaces, imágenes, encabezados ni HTML.
 """
 
+import re
 from collections.abc import Callable
 
 from app.schemas import DetailLevel, EstimationResult, OutputFormat, Phase
@@ -27,9 +33,15 @@ def _show_assumptions(detail_level: DetailLevel) -> bool:
     return detail_level != DetailLevel.SUMMARY
 
 
-def _cell(text: str) -> str:
-    # Un "|" en el texto del modelo rompería la tabla Markdown.
-    return text.replace("|", "\\|")
+# Puntuación ASCII con significado en Markdown o en Streamlit ($ para LaTeX,
+# ":" para emojis y colores). Escapada con "\", se muestra literalmente.
+_MARKDOWN_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+\-.!|<>~$:])")
+
+
+def plain(text: str) -> str:
+    """Texto del modelo como texto plano dentro de Markdown: escapa la
+    puntuación especial y aplana los saltos de línea."""
+    return _MARKDOWN_SPECIAL.sub(r"\\\1", " ".join(text.split()))
 
 
 def phases_table(result: EstimationResult, detail_level: DetailLevel) -> str:
@@ -43,14 +55,14 @@ def phases_table(result: EstimationResult, detail_level: DetailLevel) -> str:
     ]
     for phase in result.phases:
         cells = [
-            _cell(phase.name),
+            plain(phase.name),
             str(phase.hours),
             str(phase.duration_weeks),
             _eur(phase.cost_eur),
             f"{phase.confidence_pct} %",
         ]
         if with_assumptions:
-            cells.append(_cell("; ".join(phase.assumptions)) or "—")
+            cells.append(plain("; ".join(phase.assumptions)) or "—")
         rows.append("| " + " | ".join(cells) + " |")
     totals = [
         "**Total**",
@@ -62,18 +74,18 @@ def phases_table(result: EstimationResult, detail_level: DetailLevel) -> str:
     if with_assumptions:
         totals.append("")
     rows.append("| " + " | ".join(totals) + " |")
-    return "\n".join([result.summary, "", *rows])
+    return "\n".join([plain(result.summary), "", *rows])
 
 
 def line_items(result: EstimationResult, detail_level: DetailLevel) -> str:
-    lines = [result.summary, ""]
+    lines = [plain(result.summary), ""]
     for index, phase in enumerate(result.phases, start=1):
         lines.append(
-            f"{index}. **{phase.name}**: {phase.hours} h · {phase.duration_weeks} sem · "
+            f"{index}. **{plain(phase.name)}**: {phase.hours} h · {phase.duration_weeks} sem · "
             f"{_eur(phase.cost_eur)} · confianza {phase.confidence_pct} %"
         )
         if _show_assumptions(detail_level):
-            lines.extend(f"    - {assumption}" for assumption in phase.assumptions)
+            lines.extend(f"    - {plain(assumption)}" for assumption in phase.assumptions)
     lines += [
         "",
         f"**Total: {result.total_hours} h · {result.total_duration_weeks} semanas · "
@@ -84,17 +96,17 @@ def line_items(result: EstimationResult, detail_level: DetailLevel) -> str:
 
 def _phase_paragraph(phase: Phase, detail_level: DetailLevel) -> str:
     text = (
-        f"La fase de **{phase.name}** requiere unas {phase.hours} horas en "
+        f"La fase de **{plain(phase.name)}** requiere unas {phase.hours} horas en "
         f"{phase.duration_weeks} semanas ({_eur(phase.cost_eur)}), con una confianza "
         f"{_confidence_label(phase.confidence_pct)}."
     )
     if _show_assumptions(detail_level) and phase.assumptions:
-        text += " Asumimos que " + " y que ".join(phase.assumptions) + "."
+        text += " Asumimos que " + " y que ".join(plain(a) for a in phase.assumptions) + "."
     return text
 
 
 def narrative(result: EstimationResult, detail_level: DetailLevel) -> str:
-    paragraphs = [result.summary]
+    paragraphs = [plain(result.summary)]
     paragraphs += [_phase_paragraph(phase, detail_level) for phase in result.phases]
     paragraphs.append(
         f"En total, el proyecto suma unas {result.total_hours} horas en "

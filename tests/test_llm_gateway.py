@@ -179,3 +179,19 @@ def test_invalid_structured_output_is_not_cached_nor_rotated(gateway, fake_compl
     fake_completion.structured = [VALID_RESULT]
     gateway.complete_structured("system", "transcripción", EstimationResult)
     assert fake_completion.calls == ["anthropic"] * 4
+
+
+def test_validation_context_reaches_validators_and_is_part_of_the_cache_key(gateway, fake_completion):
+    low = VALID_RESULT | {"confidence_pct": 40}
+    fake_completion.structured = [low]
+
+    lenient = gateway.complete_structured(
+        "system", "transcripción", EstimationResult, context={"min_confidence_pct": 30}
+    )
+    assert lenient.confidence_pct == 40
+    with pytest.raises(InvalidStructuredOutputError):
+        gateway.complete_structured(
+            "system", "transcripción", EstimationResult, context={"min_confidence_pct": 50}
+        )
+    # Otro umbral -> otra entrada de caché (1 llamada + 3 intentos).
+    assert fake_completion.calls == ["anthropic"] * 4

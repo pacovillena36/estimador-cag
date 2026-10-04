@@ -9,12 +9,18 @@ import json
 import pytest
 from pydantic import SecretStr
 
+from app.config import Settings, get_settings
+from app.logging_config import configure_logging
+from app.guardrails.base import FailurePolicy, GuardrailResult, ModerationUnavailableError
 from app.services import llm_gateway  # antes que litellm: fija su configuración
 from app.services.llm_gateway import litellm
 from app.services.cache import TTLCache
 from app.services.llm_gateway import LLMGateway, LLMResponse, ProviderConfig
 
 _real_completion = litellm.completion
+
+# Como en la app: structlog encaminado a logging (caplog captura los eventos).
+configure_logging(get_settings())
 
 PRIMARY = ProviderConfig(
     name="anthropic", model="anthropic/claude-haiku-4-5", api_key=SecretStr("sk-test-a")
@@ -141,3 +147,50 @@ def logs(monkeypatch) -> list[tuple[str, str, dict]]:
 
     monkeypatch.setattr(llm_gateway, "log", Recorder())
     return captured
+
+
+# ---------------------------------------------------------------- guardrails
+
+
+class FakeModeration:
+    """Sustituye al cliente de la Moderation API (sin red). `flagged` simula
+    contenido marcado; `unavailable` simula un timeout de la API."""
+
+    def __init__(self) -> None:
+        self.flagged = False
+        self.unavailable = False
+        self.calls: list[str] = []
+
+    def check(self, text: str) -> GuardrailResult:
+        self.calls.append(text)
+        if self.unavailable:
+            raise ModerationUnavailableError("APITimeoutError")
+        score = 0.97 if self.flagged else 0.01
+        return GuardrailResult(
+            name="moderation",
+            triggered=self.flagged,
+            policy=FailurePolicy.EXCEPTION,
+            score=score,
+            internal_detail="violence" if self.flagged else None,
+            scores={"violence": score, "hate": 0.0},
+        )
+
+
+@pytest.fixture
+def fake_moderation() -> FakeModeration:
+    return FakeModeration()
+
+
+def make_settings(**overrides) -> Settings:
+    """Settings herméticos: ignoran el .env local del desarrollador."""
+    base = {"_env_file": None, "openai_api_key": "sk-test-o"}
+    return Settings(**(base | overrides))
+
+
+def guardrail_events(caplog, name: str = "guardrail.evaluated") -> list[dict]:
+    """Eventos structlog capturados por caplog (record.msg es el dict)."""
+    return [
+        record.msg
+        for record in caplog.records
+        if isinstance(record.msg, dict) and record.msg.get("event") == name
+    ]
