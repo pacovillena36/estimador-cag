@@ -24,7 +24,7 @@ import httpx2
 import streamlit as st
 
 from app.schemas import DetailLevel, EstimationResponse, OutputFormat, ProjectType
-from app.sessions import SessionState
+from app.session_schemas import SessionState
 from estimation_view import plain, render
 
 TIMEOUT_SECONDS = 180.0  # un turno hace dos llamadas al LLM (estimación + metadata)

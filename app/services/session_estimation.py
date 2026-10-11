@@ -6,23 +6,26 @@ pueden intercalar historial ni metadata):
 2. Input guardrails sobre la transcripción y el texto de los adjuntos
    (moderación, injection, PII), reutilizando el pipeline de /estimate.
 3. Componer el mensaje de usuario (<transcript> + <attachment_content>).
-4. Renderizar el system prompt con el project_metadata actual.
-5. messages = historial.to_messages_list(system) + [mensaje actual].
-6. LLM (wrapper existente: timeout, reintentos, fallback) con salida
-   validada contra EstimationResult; si no valida -> 502 y el historial no
-   cambia. Después, output guardrails.
-7. history.add_turn(mensaje de usuario, estimación en JSON).
-8. Actualizar project_metadata (extractor; nunca hace fallar el turno).
+4. Resolver el tier del turno (TierPolicy, reglas deterministas).
+5. Renderizar el system prompt con project_metadata, resumen y anclas.
+6. messages = system + ventana deslizante + mensaje actual.
+7. EstimationEngine: actor y, en modo acb, critic + boss. Si el actor no
+   devuelve una estimación válida -> 502 y la memoria no cambia. Después,
+   output guardrails.
+8. MemoryMaintainer: guardar el turno, anclas, resumen (si un turno sale de
+   la ventana) y project_metadata. Nunca hace fallar el turno.
+9. Telemetría de la sesión: tier, regla y uso de todas las llamadas.
 
-El historial solo avanza en turnos completados con éxito: cualquier error
-de los pasos 1-6 sale como excepción antes del paso 7.
+La memoria solo avanza en turnos completados con éxito: cualquier error de
+los pasos 1-7 sale como excepción antes del paso 8.
 
 No se usa el caché semántico: con historial, dos transcripciones parecidas
 no son peticiones equivalentes.
 
-Presupuesto de tokens: fuera de alcance en esta fase. Los límites de
-caracteres de transcripción y adjuntos acotan cada par, y la ventana
-(MAX_TURNS) el número de pares, pero no se cuentan tokens.
+Presupuesto de tokens: no se cuentan tokens antes de llamar. Lo acotan los
+límites de caracteres (transcripción, adjuntos, resumen y anclas) y la
+ventana (MAX_CONVERSATION_TURNS); el uso real se mide después en cada
+llamada (SessionTelemetry).
 """
 
 from collections.abc import Sequence
@@ -40,18 +43,20 @@ from app.attachments import (
     extract_attachments,
     read_attachments,
 )
+from app.conversation.application.estimation_engine import EngineOutcome, EstimationEngine
+from app.conversation.application.memory_maintainer import MemoryMaintainer
+from app.conversation.domain.review import EstimationMode
+from app.conversation.domain.tiering import TierDecision, TierPolicy, TierSignals
+from app.conversation.domain.usage import TurnUsage
+from app.conversation.ports import ConversationSnapshot
 from app.guardrails.pipeline import InputPipeline, OutputPipeline, description_hash
-from app.metadata_extractor import MetadataExtractor
 from app.prompts.loader import render_session_system_prompt
 from app.schemas import (
-    MIN_CONFIDENCE_CONTEXT_KEY,
     DetailLevel,
     EstimationResponse,
-    EstimationResult,
     OutputFormat,
     ProjectType,
 )
-from app.services.llm_gateway import LLMGateway
 from app.sessions import Session
 
 log = structlog.get_logger(__name__)
@@ -63,6 +68,18 @@ class TurnInput:
     project_type: ProjectType
     detail_level: DetailLevel
     output_format: OutputFormat
+    mode: EstimationMode | None = None  # None -> el modo por defecto del servicio
+
+
+@dataclass(frozen=True)
+class TurnOutcome:
+    """Respuesta HTTP del turno más lo que se observó al producirla."""
+
+    response: EstimationResponse
+    tier: TierDecision
+    mode: EstimationMode
+    usage: TurnUsage
+    engine: EngineOutcome
 
 
 def _guardrail_text(transcript: str, attachments: Sequence[ExtractedAttachment]) -> str:
@@ -72,26 +89,31 @@ def _guardrail_text(transcript: str, attachments: Sequence[ExtractedAttachment])
 class SessionEstimationService:
     def __init__(
         self,
-        gateway: LLMGateway,
         input_pipeline: InputPipeline,
         output_pipeline: OutputPipeline,
-        extractor: MetadataExtractor,
+        engine: EstimationEngine,
+        memory: MemoryMaintainer,
+        tier_policy: TierPolicy,
         *,
         prompt_version: str,
         min_confidence_pct: int,
         attachment_limits: AttachmentLimits,
+        default_mode: EstimationMode = EstimationMode.ACTOR,
     ) -> None:
-        self._gateway = gateway
         self._input = input_pipeline
         self._output = output_pipeline
-        self._extractor = extractor
+        self._engine = engine
+        self._memory = memory
+        self._tier_policy = tier_policy
         self._prompt_version = prompt_version
         self._min_confidence_pct = min_confidence_pct
         self._limits = attachment_limits
+        self._default_mode = default_mode
 
     async def estimate_turn(
         self, session: Session, turn: TurnInput, uploads: Sequence[UploadFile]
-    ) -> EstimationResponse:
+    ) -> TurnOutcome:
+        mode = turn.mode or self._default_mode
         structlog.contextvars.bind_contextvars(
             prompt_version=self._prompt_version,
             description_sha256=description_hash(turn.transcript),
@@ -106,45 +128,79 @@ class SessionEstimationService:
                 transcript_chars=len(turn.transcript),
                 attachments=len(raws),
                 attachment_bytes=sum(len(r.data) for r in raws),
-                previous_turns=len(session.history),
+                previous_turns=len(session.memory),
+                mode=mode.value,
             )
             attachments = await run_in_threadpool(extract_attachments, raws, self._limits)
             await run_in_threadpool(self._input.run, _guardrail_text(turn.transcript, attachments))
 
             user_message = compose_user_message(turn.transcript, attachments)
-            system = render_session_system_prompt(
-                project_type=turn.project_type,
-                detail_level=turn.detail_level,
-                output_format=turn.output_format,
-                project_metadata=session.metadata,
-                version=self._prompt_version,
-                min_confidence_pct=self._min_confidence_pct,
-            )
-            messages = session.history.to_messages_list(system) + [
-                {"role": "user", "content": user_message}
-            ]
-            result = await run_in_threadpool(
-                partial(
-                    self._gateway.complete_structured_messages,
-                    messages,
-                    EstimationResult,
-                    context={MIN_CONFIDENCE_CONTEXT_KEY: self._min_confidence_pct},
+            decision = self._tier_policy.resolve(
+                TierSignals(
+                    transcript=turn.transcript,
+                    attachment_chars=sum(len(a.text) for a in attachments),
+                    previous_confidence_pct=session.last_confidence_pct,
+                    has_summary=bool(session.memory.summary),
                 )
             )
-            result = self._output.run(result)
+            messages = session.memory.to_messages(self._system_prompt(session, turn)) + [
+                {"role": "user", "content": user_message}
+            ]
+            snapshot = ConversationSnapshot(
+                user_message=user_message,
+                project_metadata=session.metadata,
+                summary=session.memory.summary,
+                anchors=session.memory.anchors,
+            )
+            outcome = await run_in_threadpool(
+                partial(self._engine.estimate, messages, tier=decision.tier, mode=mode, snapshot=snapshot)
+            )
+            result = self._output.run(outcome.result)
 
             assistant_message = result.model_dump_json()
-            session.history.add_turn(user_message, assistant_message)
-            session.metadata = await run_in_threadpool(
-                self._extractor.update, session.metadata, user_message, assistant_message
+            update = await run_in_threadpool(
+                partial(
+                    self._memory.update,
+                    session.memory,
+                    session.metadata,
+                    transcript=turn.transcript,
+                    user_message=user_message,
+                    assistant_message=assistant_message,
+                )
             )
+            session.metadata = update.metadata
+            session.last_confidence_pct = None if result.is_out_of_scope else result.confidence_pct
+            usage = TurnUsage(outcome.calls + update.calls)
+            session.telemetry.record(decision, usage)
 
             response = EstimationResponse(result=result, prompt_version=self._prompt_version)
             log.info(
                 "session.turn_completed",
-                turns=len(session.history),
+                turns=len(session.memory),
                 out_of_scope=response.out_of_scope,
                 total_hours=result.total_hours,
                 truncated_attachments=sum(a.truncated for a in attachments),
+                tier=decision.tier.value,
+                tier_rule=decision.rule,
+                mode=mode.value,
+                acb_revised=outcome.review.revised if outcome.review else None,
+                llm_calls=len(usage.calls),
+                cost_usd=usage.cost_usd,
+                tokens_in=usage.tokens_in,
+                tokens_out=usage.tokens_out,
+                anchors=len(session.memory.anchors),
+                summary_chars=len(session.memory.summary),
             )
-            return response
+            return TurnOutcome(response, decision, mode, usage, outcome)
+
+    def _system_prompt(self, session: Session, turn: TurnInput) -> str:
+        return render_session_system_prompt(
+            project_type=turn.project_type,
+            detail_level=turn.detail_level,
+            output_format=turn.output_format,
+            project_metadata=session.metadata,
+            version=self._prompt_version,
+            min_confidence_pct=self._min_confidence_pct,
+            summary=session.memory.summary,
+            anchors=session.memory.anchors,
+        )

@@ -1,5 +1,7 @@
-"""Estado de las sesiones conversacionales: historial, project_metadata y
-almacén en memoria.
+"""Agregado Session y su almacén en memoria (adaptador de persistencia).
+
+Los modelos de dominio (memoria, metadata, telemetría) viven en
+app/conversation/domain; el contrato HTTP, en app/session_schemas.py.
 
 Volatilidad aceptada a propósito en esta fase:
 - Es un ejercicio de aprendizaje: el objetivo es la memoria conversacional,
@@ -13,83 +15,14 @@ Volatilidad aceptada a propósito en esta fase:
 """
 
 import asyncio
-from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
-
-MAX_TECHNOLOGIES = 30
-MAX_TECHNOLOGY_CHARS = 60
-MAX_AGREED_SCOPE_CHARS = 2000
-MAX_PROJECT_NAME_CHARS = 200
-
-Technology = Annotated[str, StringConstraints(min_length=1, max_length=MAX_TECHNOLOGY_CHARS)]
-
-
-class ProjectMetadata(BaseModel):
-    """Hechos acumulados del proyecto en curso. La genera el extractor (LLM),
-    así que todo se valida aquí: extra="forbid" impide colar campos."""
-
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    project_name: str | None = Field(
-        default=None, max_length=MAX_PROJECT_NAME_CHARS, description="Nombre del proyecto."
-    )
-    assumed_team_size: int | None = Field(
-        default=None, ge=1, le=500, description="Tamaño del equipo asumido (personas)."
-    )
-    mentioned_technologies: list[Technology] = Field(
-        default_factory=list,
-        max_length=MAX_TECHNOLOGIES,
-        description="Tecnologías mencionadas en la conversación.",
-    )
-    agreed_scope: str | None = Field(
-        default=None,
-        max_length=MAX_AGREED_SCOPE_CHARS,
-        description="Alcance acordado hasta ahora, en pocas frases.",
-    )
-
-    def is_empty(self) -> bool:
-        return (
-            self.project_name is None
-            and self.assumed_team_size is None
-            and not self.mentioned_technologies
-            and not self.agreed_scope
-        )
-
-
-class ConversationHistory:
-    """Pares (user, assistant) en una ventana deslizante de `max_turns`.
-
-    Un turno es un par completo: nunca se guarda un mensaje de usuario sin su
-    respuesta. El system prompt NO vive aquí: se regenera en cada llamada a
-    partir del project_metadata actual, así que siempre va en la posición 0 y
-    nunca se descarta al deslizar la ventana.
-    """
-
-    def __init__(self, max_turns: int) -> None:
-        self._turns: deque[tuple[str, str]] = deque(maxlen=max_turns)
-
-    def __len__(self) -> int:
-        return len(self._turns)
-
-    def add_turn(self, user_content: str, assistant_content: str) -> None:
-        self._turns.append((user_content, assistant_content))
-
-    def to_messages_list(self, system_prompt: str) -> list[dict[str, str]]:
-        """System prompt en primera posición y después los pares en orden
-        cronológico. Si el proveedor quiere el system aparte (Anthropic),
-        lo separa el cliente LLM (LiteLLM), no esta clase."""
-        messages = [{"role": "system", "content": system_prompt}]
-        for user_content, assistant_content in self._turns:
-            messages.append({"role": "user", "content": user_content})
-            messages.append({"role": "assistant", "content": assistant_content})
-        return messages
-
+from app.conversation.domain.memory import ConversationHistory, ConversationMemory
+from app.conversation.domain.metadata import ProjectMetadata
+from app.conversation.domain.usage import SessionTelemetry
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
@@ -98,13 +31,20 @@ def _utcnow() -> datetime:
 @dataclass
 class Session:
     session_id: UUID
-    history: ConversationHistory
+    memory: ConversationMemory
     created_at: datetime
     last_access_at: datetime
     metadata: ProjectMetadata = field(default_factory=ProjectMetadata)
+    telemetry: SessionTelemetry = field(default_factory=SessionTelemetry)
+    # Confianza de la última estimación en alcance (señal del tier dinámico).
+    last_confidence_pct: int | None = None
     # Serializa los turnos de una misma sesión (dos peticiones simultáneas
     # no pueden intercalar historial ni metadata).
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    @property
+    def history(self) -> ConversationHistory:
+        return self.memory.history
 
 
 class SessionCapacityError(Exception):
@@ -136,10 +76,12 @@ class SessionStore:
         max_turns: int,
         ttl: timedelta,
         max_sessions: int,
+        max_anchors: int = 12,
         clock: Callable[[], datetime] = _utcnow,
     ) -> None:
         self._sessions: dict[UUID, Session] = {}
         self._max_turns = max_turns
+        self._max_anchors = max_anchors
         self._ttl = ttl
         self._max_sessions = max_sessions
         self._clock = clock
@@ -155,7 +97,7 @@ class SessionStore:
         # uuid4: aleatorio y no predecible; actúa como token de acceso.
         session = Session(
             session_id=uuid4(),
-            history=ConversationHistory(self._max_turns),
+            memory=ConversationMemory(self._max_turns, self._max_anchors),
             created_at=now,
             last_access_at=now,
         )
@@ -182,16 +124,3 @@ class SessionStore:
 def short_session_id(session_id: UUID) -> str:
     """Para logs: el session_id completo es un token de acceso."""
     return str(session_id)[:8]
-
-
-# ------------------------------------------------------- contrato de la API
-
-
-class SessionCreated(BaseModel):
-    session_id: UUID = Field(description="Identificador de la sesión (actúa como token de acceso).")
-
-
-class SessionState(BaseModel):
-    session_id: UUID
-    project_metadata: ProjectMetadata = Field(description="Hechos acumulados del proyecto.")
-    turns: int = Field(ge=0, description="Turnos (pares user+assistant) en el historial efectivo.")

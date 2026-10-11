@@ -18,6 +18,12 @@ Responsabilidades (y lo único que sabe de proveedores la aplicación):
   reenvía los errores al modelo hasta `validation_retries` veces y, si sigue
   sin validar, eleva InvalidStructuredOutputError (no se rota de proveedor:
   el proveedor funciona, es la respuesta la que no cumple el contrato).
+- Tiers de modelo: una cadena de proveedores por tier (`fast`, `strong`).
+  El núcleo pide un tier abstracto (app/ports/llm.py) y el wrapper elige el
+  modelo; el fallback entre proveedores funciona igual en cada cadena.
+- Observabilidad: cada llamada produce un LLMUsage (latency_ms, tokens_in,
+  tokens_out, cost_usd, model, provider). El coste sale de MODEL_COSTS
+  (app/services/llm_pricing.py) y, si el modelo no está, de LiteLLM.
 - Logging estructurado de cada llamada (ver "Eventos de log" más abajo).
   Nunca se registran transcripciones, respuestas ni claves.
 
@@ -25,7 +31,7 @@ Los consumidores (endpoints) no saben ni les importa qué proveedor respondió.
 
 Eventos de log (uno de inicio y uno de cierre por llamada, más los fallos):
 
-- llm.call_started    requested_model, target_provider,
+- llm.call_started    requested_model, target_provider, tier,
                       input_tokens_estimated, cache_hit
 - llm.provider_failed provider, model, error_category (timeout, rate_limit,
                       auth, server_error, connection, bad_request, unknown),
@@ -63,7 +69,9 @@ from instructor.core.exceptions import InstructorRetryException  # noqa: E402
 from pydantic import BaseModel, SecretStr, ValidationError  # noqa: E402
 
 from app.config import Settings, get_settings  # noqa: E402
+from app.ports.llm import LLMUsage, ModelTier, StructuredCompletion  # noqa: E402
 from app.services.cache import TTLCache  # noqa: E402
+from app.services.llm_pricing import cost_from_table  # noqa: E402
 
 # Sin telemetría hacia terceros ni banners de depuración en los errores.
 litellm.telemetry = False
@@ -77,6 +85,11 @@ ProviderError = openai.APIError
 
 # Categorías de error que merece la pena reintentar sobre el mismo proveedor.
 RETRYABLE_ERRORS = frozenset({"timeout", "rate_limit", "server_error", "connection"})
+
+# Modelos que rechazan tool_choice forzado y temperature distinta de la de
+# por defecto (400). Instructor en modo TOOLS fuerza la herramienta, así que
+# con ellos la salida estructurada se pide como JSON en el texto (MD_JSON).
+_NO_FORCED_TOOL_MODELS = frozenset({"claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"})
 
 T = TypeVar("T")
 M = TypeVar("M", bound=BaseModel)
@@ -105,6 +118,9 @@ class ProviderConfig:
     model: str  # identificador LiteLLM, p. ej. "anthropic/claude-haiku-4-5"
     api_key: SecretStr
     extra_headers: dict[str, str] | None = None
+    # "tools" (tool use forzado) o "md_json" (JSON en el texto de respuesta).
+    structured_mode: str = "tools"
+    supports_temperature: bool = True
 
     def __repr__(self) -> str:  # nunca exponer la clave
         return f"ProviderConfig(name={self.name!r}, model={self.model!r})"
@@ -126,6 +142,30 @@ class LLMResponse:
     # Solo en complete_structured: la instancia validada (`text` es su JSON).
     parsed: BaseModel | None = None
 
+    @property
+    def latency_ms(self) -> float | None:
+        return round(self.elapsed_seconds * 1000, 1) if self.elapsed_seconds is not None else None
+
+    @property
+    def tokens_in(self) -> int | None:
+        return self.input_tokens
+
+    @property
+    def tokens_out(self) -> int | None:
+        return self.output_tokens
+
+    @property
+    def usage(self) -> LLMUsage:
+        return LLMUsage(
+            model=self.model,
+            provider=self.provider,
+            latency_ms=self.latency_ms or 0.0,
+            tokens_in=self.input_tokens,
+            tokens_out=self.output_tokens,
+            cost_usd=self.cost_usd,
+            cached=self.cached,
+        )
+
 
 class LLMStream:
     """Iterador de fragmentos de texto. `response` queda relleno (tokens,
@@ -145,6 +185,7 @@ class _CallContext:
 
     primary: ProviderConfig
     start: float
+    tier: ModelTier = ModelTier.FAST
     attempts: int = 0
 
     def latency_ms(self) -> float:
@@ -173,29 +214,38 @@ def classify_error(exc: Exception) -> str:
     return "unknown"
 
 
-def build_providers(settings: Settings) -> list[ProviderConfig]:
+def _provider(
+    name: str, model: str, api_key: SecretStr, extra_headers: dict[str, str] | None = None
+) -> ProviderConfig:
+    restricted = model in _NO_FORCED_TOOL_MODELS
+    return ProviderConfig(
+        name=name,
+        model=f"{name}/{model}",
+        api_key=api_key,
+        extra_headers=extra_headers,
+        structured_mode="md_json" if restricted else "tools",
+        supports_temperature=not restricted,
+    )
+
+
+def build_providers(settings: Settings, tier: ModelTier = ModelTier.FAST) -> list[ProviderConfig]:
     """Orden de la cadena de fallback: primero el proveedor preferido
-    (LLM_PROVIDER) y después el resto, omitiendo los que no tienen clave."""
+    (LLM_PROVIDER) y después el resto, omitiendo los que no tienen clave.
+    `tier` elige el modelo de cada proveedor (*_MODEL o *_STRONG_MODEL)."""
+    strong = tier is ModelTier.STRONG
     available: dict[str, ProviderConfig] = {}
 
     if settings.openai_api_key and settings.openai_api_key.get_secret_value():
-        available["openai"] = ProviderConfig(
-            name="openai",
-            model=f"openai/{settings.openai_model}",
-            api_key=settings.openai_api_key,
-        )
+        model = settings.openai_strong_model if strong else settings.openai_model
+        available["openai"] = _provider("openai", model, settings.openai_api_key)
     if settings.anthropic_api_key and settings.anthropic_api_key.get_secret_value():
         headers = (
             {"anthropic-workspace-id": settings.anthropic_workspace_id}
             if settings.anthropic_workspace_id
             else None
         )
-        available["anthropic"] = ProviderConfig(
-            name="anthropic",
-            model=f"anthropic/{settings.anthropic_model}",
-            api_key=settings.anthropic_api_key,
-            extra_headers=headers,
-        )
+        model = settings.anthropic_strong_model if strong else settings.anthropic_model
+        available["anthropic"] = _provider("anthropic", model, settings.anthropic_api_key, headers)
 
     order = [settings.llm_provider] + [
         name for name in available if name != settings.llm_provider
@@ -217,6 +267,7 @@ class LLMGateway:
         retry_backoff_seconds: float = 0.5,
         validation_retries: int = 2,
         structured_client: instructor.Instructor | None = None,
+        strong_providers: list[ProviderConfig] | None = None,
     ) -> None:
         if not providers:
             raise NoProvidersConfiguredError(
@@ -224,6 +275,8 @@ class LLMGateway:
                 "(OPENAI_API_KEY / ANTHROPIC_API_KEY)."
             )
         self._providers = providers
+        # Sin cadena strong configurada, el tier strong usa la fast.
+        self._chains = {ModelTier.FAST: providers, ModelTier.STRONG: strong_providers or providers}
         self._timeout = timeout_seconds
         self._max_retries = max_retries
         self._max_tokens = max_tokens
@@ -239,6 +292,10 @@ class LLMGateway:
             # Cada respuesta que no valida y se reenvía al modelo (FIX_RETRY).
             structured_client.on("parse:error", _log_validation_retry)
         self._structured = structured_client
+        self._structured_json = instructor.from_litellm(
+            lambda **kwargs: litellm.completion(**kwargs), mode=instructor.Mode.MD_JSON
+        )
+        self._structured_json.on("parse:error", _log_validation_retry)
 
     @property
     def provider_names(self) -> list[str]:
@@ -284,14 +341,33 @@ class LLMGateway:
         proveedor quiere el system aparte (Anthropic), LiteLLM lo separa.
         `temperature` y `max_tokens` sustituyen a los valores por defecto
         solo en esta llamada (p. ej. el extractor de metadata)."""
+        return self.complete_structured_with_usage(
+            messages, response_model, context=context, temperature=temperature, max_tokens=max_tokens
+        ).parsed
+
+    def complete_structured_with_usage(
+        self,
+        messages: list[dict],
+        response_model: type[M],
+        *,
+        context: dict[str, Any] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        tier: ModelTier = ModelTier.FAST,
+    ) -> StructuredCompletion[M]:
+        """Implementa el puerto StructuredLLM: instancia validada + LLMUsage,
+        sobre la cadena de proveedores del `tier` pedido."""
+        chain = self._chains[tier]
         overrides = {k: v for k, v in (("temperature", temperature), ("max_tokens", max_tokens)) if v is not None}
-        cache_key = self._cache_key(messages, response_model=response_model, context=context, overrides=overrides)
+        cache_key = self._cache_key(
+            messages, response_model=response_model, context=context, overrides=overrides, chain=chain
+        )
 
         def call(provider: ProviderConfig) -> tuple[Any, M]:
             return self._call_structured(provider, messages, response_model, context, overrides)
 
-        response = self._complete(messages, cache_key, call)
-        return response.parsed  # type: ignore[return-value]
+        response = self._complete(messages, cache_key, call, chain=chain, tier=tier)
+        return StructuredCompletion(parsed=response.parsed, usage=response.usage)  # type: ignore[arg-type]
 
     def stream(self, system_prompt: str, user_message: str) -> LLMStream:
         """Abre el stream de forma inmediata (no perezosa): conecta con el
@@ -320,7 +396,7 @@ class LLMGateway:
             return raw_iter, next(raw_iter, None)
 
         for index, provider in enumerate(self._providers):
-            self._log_fallback(index, provider)
+            self._log_fallback(index, provider, self._providers)
             opened = self._call_with_retries(
                 ctx,
                 provider,
@@ -335,7 +411,7 @@ class LLMGateway:
                 self._consume_stream(ctx, provider, raw_iter, first_chunk, cache_key)
             )
 
-        self._raise_all_failed(ctx)
+        self._raise_all_failed(ctx, self._providers)
 
     # ------------------------------------------------------------ internals
 
@@ -344,23 +420,27 @@ class LLMGateway:
         messages: list[dict],
         cache_key: str,
         call: Callable[[ProviderConfig], tuple[Any, BaseModel | None]],
+        *,
+        chain: list[ProviderConfig] | None = None,
+        tier: ModelTier = ModelTier.FAST,
     ) -> LLMResponse:
         """Bucle común de complete/complete_structured: caché, fallback y
         reintentos. `call` devuelve (respuesta cruda de LiteLLM, instancia
         validada o None si la llamada es de texto)."""
-        ctx = _CallContext(primary=self._providers[0], start=time.perf_counter())
+        chain = chain or self._providers
+        ctx = _CallContext(primary=chain[0], start=time.perf_counter(), tier=tier)
 
         cached = self._cache_get(cache_key)
         self._log_started(ctx, messages, cache_hit=cached is not None)
         if cached:
             return self._serve_cached(ctx, cached)
 
-        for index, provider in enumerate(self._providers):
-            self._log_fallback(index, provider)
+        for index, provider in enumerate(chain):
+            self._log_fallback(index, provider, chain)
             result = self._call_with_retries(
                 ctx,
                 provider,
-                has_fallback=index < len(self._providers) - 1,
+                has_fallback=index < len(chain) - 1,
                 call=lambda p=provider: call(p),
             )
             if result is None:
@@ -383,7 +463,7 @@ class LLMGateway:
             self._cache_set(cache_key, response)
             return response
 
-        self._raise_all_failed(ctx)
+        self._raise_all_failed(ctx, chain)
 
     def _call_structured(
         self,
@@ -393,12 +473,16 @@ class LLMGateway:
         context: dict[str, Any] | None,
         overrides: dict[str, Any] | None = None,
     ) -> tuple[Any, M]:
+        overrides = dict(overrides or {})
+        if not provider.supports_temperature:
+            overrides.pop("temperature", None)
+        client = self._structured_json if provider.structured_mode == "md_json" else self._structured
         try:
-            parsed, raw = self._structured.create_with_completion(
+            parsed, raw = client.create_with_completion(
                 response_model=response_model,
                 context=context,
                 max_retries=self._validation_retries,
-                **(self._request_kwargs(provider, messages) | (overrides or {})),
+                **(self._request_kwargs(provider, messages) | overrides),
             )
         except InstructorRetryException as exc:
             # Instructor también envuelve los errores del proveedor: esos se
@@ -568,6 +652,7 @@ class LLMGateway:
         response_model: type[BaseModel] | None = None,
         context: dict[str, Any] | None = None,
         overrides: dict[str, Any] | None = None,
+        chain: list[ProviderConfig] | None = None,
     ) -> str:
         # Exact-match sobre todo lo que determina la respuesta: mensajes,
         # parámetros de generación, cadena de modelos y, en las llamadas
@@ -577,7 +662,7 @@ class LLMGateway:
             {
                 "messages": messages,
                 "max_tokens": self._max_tokens,
-                "models": [p.model for p in self._providers],
+                "models": [p.model for p in (chain or self._providers)],
                 "response_schema": (
                     response_model.model_json_schema() if response_model else None
                 ),
@@ -610,6 +695,9 @@ class LLMGateway:
     def _estimate_cost(model: str, input_tokens: int | None, output_tokens: int | None) -> float | None:
         if input_tokens is None or output_tokens is None:
             return None
+        table_cost = cost_from_table(model, input_tokens, output_tokens)
+        if table_cost is not None:
+            return table_cost
         try:
             prompt_cost, completion_cost = litellm.cost_per_token(
                 model=model, prompt_tokens=input_tokens, completion_tokens=output_tokens
@@ -625,16 +713,18 @@ class LLMGateway:
             "llm.call_started",
             requested_model=ctx.primary.model,
             target_provider=ctx.primary.name,
+            tier=ctx.tier.value,
             input_tokens_estimated=self._estimate_input_tokens(ctx.primary.model, messages),
             cache_hit=cache_hit,
         )
 
-    def _log_fallback(self, index: int, provider: ProviderConfig) -> None:
+    @staticmethod
+    def _log_fallback(index: int, provider: ProviderConfig, chain: list[ProviderConfig]) -> None:
         if index == 0:
             return
         log.info(
             "llm.fallback",
-            from_provider=self._providers[index - 1].name,
+            from_provider=chain[index - 1].name,
             to_provider=provider.name,
             to_model=provider.model,
         )
@@ -715,16 +805,17 @@ class LLMGateway:
             errors=errors,
         )
 
-    def _raise_all_failed(self, ctx: _CallContext) -> NoReturn:
+    @staticmethod
+    def _raise_all_failed(ctx: _CallContext, chain: list[ProviderConfig]) -> NoReturn:
+        names = [p.name for p in chain]
         log.error(
             "llm.call_failed",
-            providers=self.provider_names,
+            providers=names,
+            tier=ctx.tier.value,
             attempts=ctx.attempts,
             latency_ms=ctx.latency_ms(),
         )
-        raise AllProvidersFailedError(
-            f"Todos los proveedores LLM han fallado: {', '.join(self.provider_names)}"
-        )
+        raise AllProvidersFailedError(f"Todos los proveedores LLM han fallado: {', '.join(names)}")
 
 
 def _log_validation_retry(error: Exception) -> None:
@@ -744,6 +835,7 @@ def get_llm_gateway() -> LLMGateway:
     )
     return LLMGateway(
         build_providers(settings),
+        strong_providers=build_providers(settings, ModelTier.STRONG),
         timeout_seconds=settings.llm_timeout_seconds,
         max_retries=settings.llm_max_retries,
         max_tokens=settings.llm_max_tokens,

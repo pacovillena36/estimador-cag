@@ -5,12 +5,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
-from app.sessions import (
-    ConversationHistory,
-    ProjectMetadata,
-    SessionCapacityError,
-    SessionStore,
-)
+from app.conversation.domain.memory import ConversationHistory
+from app.conversation.domain.metadata import ProjectMetadata
+from app.sessions import SessionCapacityError, SessionStore
 
 
 def test_history_puts_system_first_then_pairs_in_order():

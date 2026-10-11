@@ -34,6 +34,10 @@ jobs:
             "app/prompts/estimation/v1/system.j2"
             "app/prompts/estimation/v1/user.j2"
             "app/prompts/estimation/v1/examples.j2"
+            "app/services/llm_pricing.py"
+            "app/ports/llm.py"
+            "evals/golden_dataset.json"
+            "evals/run.py"
             "pyproject.toml"
           )
 

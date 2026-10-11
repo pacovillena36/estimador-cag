@@ -1,0 +1,201 @@
+{
+  "cases": [
+    {
+      "id": "web_reservas_peluquerias",
+      "description": "SaaS de reservas para peluquerías con pagos y recordatorios.",
+      "project_type": "web_saas",
+      "turns": [
+        "Reunión con el cliente: quieren un SaaS para que las peluquerías gestionen sus reservas online. Cada peluquería tiene su panel con agenda y empleados, y los clientes reservan desde una web pública. Cobro de una señal con tarjeta al reservar y recordatorios por email y SMS 24 horas antes. Login para peluquerías y para clientes."
+      ],
+      "expected": {
+        "cost_eur": {"min": 15000, "max": 90000},
+        "recall_terms": ["reserva", "pago|cobro|señal|stripe|tarjeta", "recordatorio|notificacion|sms|email", "autenticacion|login|usuario|registro"]
+      }
+    },
+    {
+      "id": "mobile_fitness",
+      "description": "App móvil de entrenamiento para iOS y Android.",
+      "project_type": "mobile_app",
+      "turns": [
+        "El cliente quiere una app de entrenamiento personal para iOS y Android: planes de ejercicios, registro de sesiones, gráficas de progreso, sincronización con Apple Health y Google Fit, y notificaciones push para recordar entrenar. Publicación en App Store y Google Play."
+      ],
+      "expected": {
+        "cost_eur": {"min": 20000, "max": 150000},
+        "recall_terms": ["ios", "android", "publicacion|app store|google play|tienda", "notificacion|push", "health|google fit|sincroniz"]
+      }
+    },
+    {
+      "id": "internal_inventario",
+      "description": "Herramienta interna de inventario con SSO.",
+      "project_type": "internal_tool",
+      "turns": [
+        "Necesitan una herramienta interna para controlar el inventario de tres almacenes: entradas, salidas, traspasos entre almacenes y alertas de stock mínimo. Inicio de sesión con el SSO corporativo de Azure AD y permisos por rol (operario, jefe de almacén, administración). Unos 40 usuarios."
+      ],
+      "expected": {
+        "cost_eur": {"min": 10000, "max": 80000},
+        "recall_terms": ["inventario|stock", "sso|azure|inicio de sesion", "rol|permiso", "alerta|aviso"]
+      }
+    },
+    {
+      "id": "data_ventas_erp",
+      "description": "Pipeline de datos de ventas desde el ERP a un data warehouse.",
+      "project_type": "data_pipeline",
+      "turns": [
+        "Quieren consolidar las ventas diarias del ERP (SAP) y de la tienda online (Shopify) en un data warehouse en BigQuery, con cargas nocturnas, controles de calidad de datos, reintentos si falla una carga y alertas al equipo de datos. Después conectarán dashboards de Looker."
+      ],
+      "expected": {
+        "cost_eur": {"min": 15000, "max": 120000},
+        "recall_terms": ["erp|sap|fuente", "calidad", "orquest|airflow|programac|nocturn|carga", "monitoriz|alerta"]
+      }
+    },
+    {
+      "id": "web_facturacion_multitenant",
+      "description": "SaaS de facturación multi-tenant con suscripciones.",
+      "project_type": "web_saas",
+      "turns": [
+        "Producto SaaS de facturación para autónomos y pymes: emisión de facturas con numeración legal, clientes, presupuestos, envío por email y exportación para la gestoría. Multi-tenant con aislamiento por empresa, planes de suscripción mensual con Stripe y panel de administración."
+      ],
+      "expected": {
+        "cost_eur": {"min": 30000, "max": 200000},
+        "recall_terms": ["factura", "tenant|aislamiento|empresa", "suscripcion|stripe|plan|pago", "administracion|panel"]
+      }
+    },
+    {
+      "id": "mobile_delivery",
+      "description": "App de pedidos a domicilio con seguimiento del repartidor.",
+      "project_type": "mobile_app",
+      "turns": [
+        "Una cadena de restaurantes quiere su propia app de pedidos a domicilio para iOS y Android: menú, carrito, pago con tarjeta, seguimiento del repartidor en el mapa en tiempo real y notificaciones del estado del pedido. Además, una app sencilla para los repartidores y un panel web para los restaurantes."
+      ],
+      "expected": {
+        "cost_eur": {"min": 30000, "max": 250000},
+        "recall_terms": ["pedido", "pago|tarjeta", "mapa|seguimiento|tiempo real|geolocaliz", "repartidor", "panel"]
+      }
+    },
+    {
+      "id": "internal_vacaciones",
+      "description": "Portal interno de solicitud y aprobación de vacaciones.",
+      "project_type": "internal_tool",
+      "turns": [
+        "Portal interno para que los 200 empleados soliciten vacaciones y ausencias, con flujo de aprobación por su responsable, calendario del equipo y saldo de días. Login con el SSO de Google Workspace y exportación mensual para nóminas."
+      ],
+      "expected": {
+        "cost_eur": {"min": 8000, "max": 60000},
+        "recall_terms": ["vacacion|ausencia", "aprobacion|flujo|responsable", "sso|google|login|inicio de sesion", "calendario"]
+      }
+    },
+    {
+      "id": "data_iot_tiempo_real",
+      "description": "Ingesta en tiempo real de sensores IoT.",
+      "project_type": "data_pipeline",
+      "turns": [
+        "Una empresa de climatización tiene 5.000 sensores IoT que envían temperatura y consumo cada 10 segundos. Quieren ingestarlos en tiempo real con Kafka, detectar anomalías, guardar el histórico en un data lake y alertar a los técnicos cuando un equipo falla."
+      ],
+      "expected": {
+        "cost_eur": {"min": 30000, "max": 250000},
+        "recall_terms": ["kafka|streaming|tiempo real|ingesta", "anomalia", "data lake|historico|almacenamiento", "alerta"]
+      }
+    },
+    {
+      "id": "web_marketplace_b2b",
+      "description": "Marketplace B2B de material de construcción.",
+      "project_type": "web_saas",
+      "turns": [
+        "Marketplace B2B donde distribuidores de material de construcción publican catálogo y precios por volumen, y las constructoras piden presupuestos, comparan ofertas y compran. Pagos a 30 días con validación de crédito, valoraciones de proveedores y panel de administración para moderar."
+      ],
+      "expected": {
+        "cost_eur": {"min": 40000, "max": 300000},
+        "recall_terms": ["catalogo|producto", "presupuesto|oferta", "pago|credito", "valoracion|reseña", "administracion|moderac"]
+      }
+    },
+    {
+      "id": "mobile_citas_medicas",
+      "description": "App de citas médicas integrada con el sistema del hospital.",
+      "project_type": "mobile_app",
+      "turns": [
+        "Un grupo hospitalario quiere una app para que los pacientes pidan y cancelen citas, vean sus informes y reciban recordatorios. Debe integrarse con su sistema de información hospitalaria (HIS) mediante su API HL7 FHIR y cumplir el RGPD con datos de salud."
+      ],
+      "expected": {
+        "cost_eur": {"min": 30000, "max": 250000},
+        "recall_terms": ["cita", "integracion|his|fhir|hl7", "recordatorio|notificacion", "rgpd|seguridad|privacidad|cumplimiento"]
+      }
+    },
+    {
+      "id": "oos_reforma_cocina",
+      "description": "Fuera de alcance: no es un proyecto de software.",
+      "project_type": "web_saas",
+      "turns": [
+        "Queremos reformar la cocina de casa: cambiar los muebles, poner una encimera de cuarzo, alicatar la pared y cambiar la instalación eléctrica. ¿Cuánto costaría y cuánto tardaría?"
+      ],
+      "expected": {"out_of_scope": true}
+    },
+    {
+      "id": "oos_vago",
+      "description": "Fuera de alcance: no hay información suficiente.",
+      "project_type": "web_saas",
+      "turns": [
+        "Hola, buenas. Pues eso, a ver qué nos podéis decir."
+      ],
+      "expected": {"out_of_scope": true}
+    },
+    {
+      "id": "memoria_presupuesto",
+      "description": "El presupuesto del turno 1 debe respetarse cuando ya salió de la ventana (ancla + resumen).",
+      "project_type": "web_saas",
+      "window": 1,
+      "turns": [
+        "Portal de clientes para una correduría de seguros: los clientes consultan sus pólizas y abren siniestros. El presupuesto máximo es de 30.000 €, no podemos pasar de ahí.",
+        "Añadimos un área de documentos donde descargar las pólizas en PDF.",
+        "Añadimos avisos por email cuando cambie el estado de un siniestro.",
+        "Con todo lo hablado, dame la estimación final."
+      ],
+      "expected": {
+        "cost_eur": {"min": 8000, "max": 30000},
+        "recall_terms": ["poliza", "siniestro", "documento|pdf|descarga", "email|aviso|notificacion"],
+        "min_recall": 0.75
+      }
+    },
+    {
+      "id": "memoria_equipo_plazo",
+      "description": "Equipo y plazo del turno 1 deben sobrevivir a la ventana.",
+      "project_type": "mobile_app",
+      "window": 1,
+      "turns": [
+        "App móvil de fidelización para una cadena de cafeterías, iOS y Android. Seremos un equipo de 3 personas y debe estar lista en 12 semanas.",
+        "Incluye un programa de puntos por consumición y cupones de descuento.",
+        "Recalcula la estimación con todo lo acordado."
+      ],
+      "expected": {
+        "cost_eur": {"min": 10000, "max": 90000},
+        "recall_terms": ["punto|fidelizacion", "cupon|descuento", "ios|android|movil"],
+        "min_recall": 0.67
+      }
+    },
+    {
+      "id": "cambio_alcance",
+      "description": "Un cambio de alcance a mitad de conversación debe reflejarse.",
+      "project_type": "internal_tool",
+      "turns": [
+        "Herramienta interna de gestión de incidencias de TI para 300 empleados, con web y app móvil, categorías, prioridades y SLA.",
+        "Descartamos la app móvil: solo web, pero responsive.",
+        "Añade la integración con Jira para escalar incidencias al equipo de desarrollo."
+      ],
+      "expected": {
+        "cost_eur": {"min": 10000, "max": 90000},
+        "recall_terms": ["incidencia|ticket", "jira|integracion", "sla|prioridad", "responsive|web"]
+      }
+    },
+    {
+      "id": "data_migracion_legacy",
+      "description": "Migración de datos legacy (fuerza el tier strong por complejidad).",
+      "project_type": "data_pipeline",
+      "turns": [
+        "Hay que migrar 15 años de datos de clientes y contratos desde un AS/400 legacy a PostgreSQL en la nube. Incluye limpieza y deduplicación de clientes, validación de la migración con conciliaciones, una convivencia de dos meses con sincronización diaria entre ambos sistemas y el plan de vuelta atrás."
+      ],
+      "expected": {
+        "cost_eur": {"min": 20000, "max": 200000},
+        "recall_terms": ["migracion", "limpieza|deduplic|calidad", "validacion|conciliacion", "sincroniz|convivencia", "vuelta atras|rollback|contingencia"]
+      }
+    }
+  ]
+}

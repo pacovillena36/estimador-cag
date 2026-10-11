@@ -15,8 +15,11 @@ from app.config import get_settings
 from app.guardrails.moderation import get_moderation_client
 from app.main import app
 from app.schemas import EstimationResult
+from app.conversation.domain.review import CriticReport
+from app.conversation.ports import ConversationSummary
+from app.ports.llm import LLMUsage, StructuredCompletion
 from app.services.llm_gateway import InvalidStructuredOutputError, get_llm_gateway
-from app.sessions import ProjectMetadata
+from app.conversation.domain.metadata import ProjectMetadata
 from tests.conftest import FakeModeration, guardrail_events, make_gateway
 from tests.sessions.conftest import create_session
 from tests.sessions.files import make_docx, make_pdf
@@ -55,10 +58,33 @@ class FakeLLM:
     def __init__(self) -> None:
         self.estimation_calls: list[list[dict]] = []
         self.extractor_calls: list[list[dict]] = []
+        self.summary_calls: list[list[dict]] = []
+        self.critic_calls: list[list[dict]] = []
+        self.boss_calls: list[list[dict]] = []
+        self.critic_verdict = "ok"
+        self.tiers: list[str] = []
         self.fail_extractor = False
         self.invalid_estimation = False
 
-    def complete_structured_messages(self, messages, response_model, *, context=None, temperature=None, max_tokens=None):
+    def complete_structured_with_usage(
+        self, messages, response_model, *, context=None, temperature=None, max_tokens=None, tier="fast"
+    ):
+        parsed = self._respond(messages, response_model, context, temperature, max_tokens, tier)
+        usage = LLMUsage(model="fake", provider="fake", latency_ms=1.0, tokens_in=100, tokens_out=10, cost_usd=0.001)
+        return StructuredCompletion(parsed=parsed, usage=usage)
+
+    def _respond(self, messages, response_model, context, temperature, max_tokens, tier):
+        if response_model is CriticReport:
+            self.critic_calls.append(messages)
+            issues = [] if self.critic_verdict == "ok" else [{"category": "missing_phase", "description": "Falta QA."}]
+            return CriticReport.model_validate({"verdict": self.critic_verdict, "issues": issues})
+        if response_model is EstimationResult and "<critic_report>" in messages[-1]["content"]:
+            self.boss_calls.append(messages)
+            self.tiers.append(f"boss:{tier}")
+            return EstimationResult.model_validate(estimation(300, "Revisada por el boss"), context=context)
+        if response_model is ConversationSummary:
+            self.summary_calls.append(messages)
+            return ConversationSummary(summary=f"Resumen tras {len(self.summary_calls)} turnos expulsados.")
         if response_model is ProjectMetadata:
             self.extractor_calls.append(messages)
             assert temperature == 0 and max_tokens
@@ -67,6 +93,7 @@ class FakeLLM:
             return self._metadata(messages[-1]["content"])
 
         self.estimation_calls.append(messages)
+        self.tiers.append(str(tier))
         if self.invalid_estimation:
             raise InvalidStructuredOutputError("respuesta que no cumple EstimationResult")
         current_user = messages[-1]["content"]
@@ -166,10 +193,10 @@ async def test_3_sliding_window_keeps_at_most_max_turns_previous_pairs(client, f
     for i in range(1, 9):
         assert (await turn(client, session_id, f"Turno número {i} de la conversación.")).status_code == 200
 
-    assert settings.max_turns == 6
+    assert settings.max_conversation_turns == 6
     for i, messages in enumerate(fake_llm.estimation_calls, start=1):
         assert messages[0]["role"] == "system"
-        assert previous_pairs(messages) == min(i - 1, settings.max_turns)
+        assert previous_pairs(messages) == min(i - 1, settings.max_conversation_turns)
         roles = [m["role"] for m in messages[1:-1]]
         assert roles == ["user", "assistant"] * previous_pairs(messages)
 

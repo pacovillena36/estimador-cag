@@ -1,13 +1,11 @@
 """Fixtures de las sesiones: SessionStore nuevo por test, settings herméticos
 y un cliente httpx asíncrono contra la app (ASGITransport, sin red)."""
 
-from datetime import timedelta
-
 import httpx
 import pytest
 
 from app.config import get_settings
-from app.dependencies import get_session_store
+from app.dependencies import build_session_store, get_session_store
 from app.main import app
 from app.sessions import SessionStore
 from tests.conftest import make_settings
@@ -30,11 +28,7 @@ def settings(session_settings):
 
 @pytest.fixture
 def store(settings) -> SessionStore:
-    return SessionStore(
-        max_turns=settings.max_turns,
-        ttl=timedelta(minutes=settings.session_ttl_minutes),
-        max_sessions=settings.max_sessions,
-    )
+    return build_session_store(settings)
 
 
 @pytest.fixture

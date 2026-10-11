@@ -1,9 +1,10 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.conversation.domain.review import EstimationMode
 from app.guardrails.base import GuardrailMode
 from app.semantic_cache.ports import CacheMode
 from app.schemas import (
@@ -54,6 +55,9 @@ class Settings(BaseSettings):
     # Snapshot fechado en lugar del alias: el mismo prompt da resultados
     # reproducibles aunque Anthropic actualice el alias "claude-haiku-4-5".
     anthropic_model: str = "claude-haiku-4-5-20251001"
+    # Tier strong (tier dinámico y boss de Actor-Critic-Boss).
+    openai_strong_model: str = "gpt-4o"
+    anthropic_strong_model: str = "claude-sonnet-5-5"
 
     # Versión de los prompts (carpeta app/prompts/estimation/<versión>/).
     # v3 = v1 + sección de alcance (permite responder "fuera de alcance").
@@ -108,12 +112,31 @@ class Settings(BaseSettings):
     embedding_timeout_ms: int = Field(1000, ge=100, le=10_000)
 
     # --- Sesiones conversacionales (POST /sessions/{id}/estimate) ----------
-    # Versión del prompt de las sesiones (v4 = v3 + <project_metadata> y los
-    # bloques <transcript>/<attachment_content>). /estimate sigue con
-    # PROMPT_VERSION.
-    session_prompt_version: str = Field("v4", pattern=r"^v\d+$")
+    # Versión del prompt de las sesiones (v5 = v4 + <conversation_summary> y
+    # <anchors>). /estimate sigue con PROMPT_VERSION.
+    session_prompt_version: str = Field("v5", pattern=r"^v\d+$")
     # Ventana deslizante: pares user+assistant previos que se envían al LLM.
-    max_turns: int = Field(6, ge=1, le=50)
+    # MAX_TURNS se sigue aceptando como nombre antiguo.
+    max_conversation_turns: int = Field(
+        6,
+        ge=1,
+        le=50,
+        validation_alias=AliasChoices("max_conversation_turns", "max_turns"),
+    )
+    # Memoria a largo plazo: anclas de los turnos expulsados de la ventana y
+    # resumen acumulativo (una llamada fast por turno expulsado).
+    max_anchors: int = Field(12, ge=0, le=100)
+    summarizer_max_tokens: int = Field(1024, ge=128, le=4096)
+
+    # Tier dinámico: off (siempre fast) | dynamic (reglas de TierPolicy).
+    tier_mode: Literal["off", "dynamic"] = "dynamic"
+    tier_attachment_chars_threshold: int = Field(8_000, ge=0)
+    tier_transcript_chars_threshold: int = Field(6_000, ge=0)
+    tier_low_confidence_pct: int = Field(60, ge=0, le=100)
+
+    # Modo por defecto de las sesiones: actor (una llamada) | acb
+    # (Actor-Critic-Boss). Se puede pedir por turno con ?mode=.
+    estimation_mode: EstimationMode = EstimationMode.ACTOR
     # Memoria del proceso: expiración por inactividad y número máximo de
     # sesiones vivas (al llegar al máximo, POST /sessions responde 503).
     session_ttl_minutes: int = Field(60, ge=1, le=24 * 60)

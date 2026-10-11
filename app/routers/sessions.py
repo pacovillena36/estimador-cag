@@ -5,10 +5,11 @@ traducen en los exception handlers de app/main.py."""
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Depends, File, Form, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 
 from app.config import Settings, get_settings
+from app.conversation.domain.review import EstimationMode
 from app.dependencies import get_session_estimation_service, get_session_store
 from app.schemas import (
     DetailLevel,
@@ -18,14 +19,8 @@ from app.schemas import (
     ProjectType,
 )
 from app.services.session_estimation import SessionEstimationService, TurnInput
-from app.sessions import (
-    Session,
-    SessionCreated,
-    SessionNotFoundError,
-    SessionState,
-    SessionStore,
-    short_session_id,
-)
+from app.session_schemas import SessionCreated, SessionState, SessionUsage
+from app.sessions import Session, SessionNotFoundError, SessionStore, short_session_id
 
 log = structlog.get_logger(__name__)
 
@@ -61,14 +56,35 @@ async def create_session(store: SessionStore = Depends(get_session_store)) -> Se
 @router.get(
     "/{session_id}",
     response_model=SessionState,
-    summary="Estado de la sesión: project_metadata y turnos en el historial",
+    summary="Estado de la sesión: metadata, memoria, tier y uso del LLM (contadores)",
     responses=NOT_FOUND,
 )
 async def read_session(session: Session = Depends(get_session)) -> SessionState:
+    return _session_state(session)
+
+
+def _session_state(session: Session) -> SessionState:
+    memory, telemetry = session.memory, session.telemetry
+    last = telemetry.last_turn
     return SessionState(
         session_id=session.session_id,
         project_metadata=session.metadata,
-        turns=len(session.history),
+        turns=len(memory),
+        message_count=memory.message_count,
+        anchors_count=len(memory.anchors),
+        summary_chars=len(memory.summary),
+        last_resolved_tier=telemetry.last_tier.tier.value if telemetry.last_tier else None,
+        last_tier_rule=telemetry.last_tier.rule if telemetry.last_tier else None,
+        usage=SessionUsage(
+            last_turn_cost_usd=last.cost_usd if last else None,
+            last_turn_tokens_in=last.tokens_in if last else None,
+            last_turn_tokens_out=last.tokens_out if last else None,
+            last_turn_latency_ms=last.latency_ms if last else None,
+            last_turn_calls=last.count_by_role() if last else {},
+            total_cost_usd=telemetry.total_cost_usd,
+            total_tokens_in=telemetry.total_tokens_in,
+            total_tokens_out=telemetry.total_tokens_out,
+        ),
     )
 
 
@@ -114,6 +130,9 @@ async def estimate_turn(
     detail_level: DetailLevel = Form(DetailLevel.MEDIUM),
     output_format: OutputFormat = Form(OutputFormat.PHASES_TABLE),
     attachments: list[UploadFile] | None = File(None, description="Adjuntos PDF o DOCX (opcional)."),
+    mode: EstimationMode | None = Query(
+        None, description="actor (una llamada) o acb (Actor-Critic-Boss). Por defecto, ESTIMATION_MODE."
+    ),
     settings: Settings = Depends(get_settings),
     service: SessionEstimationService = Depends(get_session_estimation_service),
 ) -> EstimationResponse:
@@ -126,5 +145,6 @@ async def estimate_turn(
             f"String should have at most {settings.max_transcript_chars} characters",
             {"max_length": settings.max_transcript_chars},
         )
-    turn = TurnInput(transcript, project_type, detail_level, output_format)
-    return await service.estimate_turn(session, turn, attachments or [])
+    turn = TurnInput(transcript, project_type, detail_level, output_format, mode)
+    outcome = await service.estimate_turn(session, turn, attachments or [])
+    return outcome.response

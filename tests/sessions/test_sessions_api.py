@@ -30,6 +30,21 @@ async def test_get_session_returns_empty_metadata_and_zero_turns(client):
             "agreed_scope": None,
         },
         "turns": 0,
+        "message_count": 0,
+        "anchors_count": 0,
+        "summary_chars": 0,
+        "last_resolved_tier": None,
+        "last_tier_rule": None,
+        "usage": {
+            "last_turn_cost_usd": None,
+            "last_turn_tokens_in": None,
+            "last_turn_tokens_out": None,
+            "last_turn_latency_ms": None,
+            "last_turn_calls": {},
+            "total_cost_usd": 0.0,
+            "total_tokens_in": 0,
+            "total_tokens_out": 0,
+        },
     }
 
 

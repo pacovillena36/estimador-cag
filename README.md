@@ -38,10 +38,17 @@ estimador-cag/
 │   │   └── factory.py            # get_semantic_cache() según la configuración
 │   ├── embeddings.py             # Cliente de embeddings (OpenAI) con timeout
 │   ├── request_context.py        # RequestContext (tenant) fuera del body
-│   ├── sessions.py               # ProjectMetadata, ConversationHistory, Session, SessionStore
+│   ├── sessions.py               # Agregado Session y SessionStore (memoria del proceso)
+│   ├── session_schemas.py        # Contrato HTTP de sesiones (SessionState de depuración)
 │   ├── attachments.py            # Validación y extracción de texto de PDF/DOCX
-│   ├── metadata_extractor.py     # Extractor LLM de project_metadata + merge
-│   ├── dependencies.py           # get_session_store, servicios de sesión (inyectables)
+│   ├── dependencies.py           # Raíz de composición: conecta puertos y adaptadores
+│   ├── ports/
+│   │   └── llm.py                # Puerto StructuredLLM, ModelTier, LLMUsage
+│   ├── conversation/             # Núcleo conversacional (hexagonal)
+│   │   ├── domain/               # Puro: memory, anchors, metadata, tiering, review, usage
+│   │   ├── ports.py              # Summarizer, extractor, critic, boss (Protocols)
+│   │   ├── application/          # Casos de uso: estimation_engine (actor/ACB), memory_maintainer
+│   │   └── adapters/             # Implementaciones con LLM + prompts (llm_*.py)
 │   ├── prompts/
 │   │   ├── loader.py             # render_estimation_prompt(request, version) -> (system, user)
 │   │   └── estimation/
@@ -51,14 +58,27 @@ estimador-cag/
 │   │       │   └── examples.j2   # Ejemplos few-shot (instancias de EstimationResult en JSON)
 │   │       ├── v2/               # Igual que v1 salvo el set de ejemplos
 │   │       ├── v4/               # Sesiones: <transcript>, <attachment_content>, <project_metadata>
+│   │       ├── v5/               # v4 + <conversation_summary> y <anchors> (sesiones, por defecto)
 │   │       └── v3/               # v1 + sección <scope> (versión por defecto)
+│   │   ├── metadata/v1/          # Extractor de project_metadata
+│   │   ├── summary/v1/           # Summarizer acumulativo
+│   │   └── review/v1/            # Critic y boss (Actor-Critic-Boss)
 │   ├── routers/
 │   │   └── estimations.py        # POST /api/v1/estimate (delgado: delega en el servicio)
 │   └── services/
 │       ├── estimation_service.py # Orquesta guardrails, prompt y LLM
-│       ├── llm_gateway.py        # Wrapper de proveedores (LiteLLM + Instructor): fallback, caché, logging
+│       ├── llm_gateway.py        # Wrapper de proveedores (LiteLLM + Instructor): tiers, fallback, caché, uso
+│       ├── llm_pricing.py        # MODEL_COSTS: precio por millón de tokens de cada modelo
+│       ├── session_estimation.py # Orquesta un turno de sesión (guardrails, tier, motor, memoria)
 │       └── cache.py              # Caché exact-match en memoria (TTL + LRU)
+├── evals/
+│   ├── golden_dataset.json       # 16 casos golden
+│   ├── dataset.py / metrics.py   # Casos validados y 3 métricas binarias
+│   ├── runner.py / executor.py   # Runner (puerto CaseExecutor) y adaptador con el servicio real
+│   └── run.py                    # CLI: uv run python -m evals.run --mode actor|acb
 ├── tests/
+│   ├── conversation/             # Dominio y casos de uso del núcleo conversacional
+│   ├── evals/                    # Dataset, métricas y runner (sin LLM)
 │   ├── guardrails/               # Normalización, injection, PII, moderación, pipeline
 │   ├── semantic_cache/           # Bucket, servicio con dobles, adaptadores e integración (Redis Stack)
 │   ├── sessions/                 # Sesiones: modelo, API, adjuntos, metadata y turnos con LLM falso
@@ -416,9 +436,9 @@ anteriores.
 | Endpoint | Qué hace |
 |---|---|
 | `POST /api/v1/sessions` | Crea una sesión vacía → `201 {"session_id": "<uuid4>"}` |
-| `GET /api/v1/sessions/{id}` | `{"session_id", "project_metadata", "turns"}` (para el panel del cliente) |
+| `GET /api/v1/sessions/{id}` | Estado y depuración: `project_metadata`, `turns`, `message_count`, `anchors_count`, `summary_chars`, `last_resolved_tier`, `last_tier_rule` y `usage` (coste y tokens del último turno y acumulados). Solo contadores |
 | `DELETE /api/v1/sessions/{id}` | Borra la sesión ("Nueva conversación") → `204` |
-| `POST /api/v1/sessions/{id}/estimate` | Un turno: `multipart/form-data` con `transcript` (obligatorio), `project_type` (obligatorio), `detail_level` y `output_format` (opcionales: `medium`, `phases_table`) y `attachments` (PDF/DOCX, opcional). Devuelve el mismo `EstimationResponse` de `/estimate` |
+| `POST /api/v1/sessions/{id}/estimate` | Un turno: `multipart/form-data` con `transcript` (obligatorio), `project_type` (obligatorio), `detail_level` y `output_format` (opcionales: `medium`, `phases_table`) y `attachments` (PDF/DOCX, opcional). Query `?mode=actor\|acb` (opcional). Devuelve el mismo `EstimationResponse` de `/estimate` |
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/sessions
@@ -438,8 +458,8 @@ se intercalan):
    transcripción y el texto de los adjuntos.
 3. Mensaje de usuario: `<transcript>…</transcript>` y, por cada adjunto,
    `--- attachment: nombre ---` + `<attachment_content>…</attachment_content>`.
-4. System prompt (versión `v4`, `SESSION_PROMPT_VERSION`) regenerado con el
-   `project_metadata` actual.
+4. System prompt (versión `v5`, `SESSION_PROMPT_VERSION`) regenerado con el
+   `project_metadata`, el resumen acumulado y las anclas actuales.
 5. `messages = [system] + historial + [mensaje actual]` → LLM (el mismo
    wrapper: timeout, reintentos, fallback y salida validada contra
    `EstimationResult`; si no valida → `502` y **el historial no cambia**) →
@@ -474,7 +494,7 @@ escribir a disco. Validaciones:
   instrucciones, y las etiquetas delimitadoras que aparezcan en el
   contenido se neutralizan (un documento no puede "cerrar" su bloque).
 
-**`project_metadata`: extractor LLM** ([`app/metadata_extractor.py`](app/metadata_extractor.py)).
+**`project_metadata`: extractor LLM** ([`app/conversation/adapters/llm_metadata_extractor.py`](app/conversation/adapters/llm_metadata_extractor.py)).
 Tras cada turno, una segunda llamada al LLM (salida estructurada con
 Instructor, `response_model=ProjectMetadata`, `temperature=0`,
 `max_tokens` acotado) recibe el metadata actual, el último mensaje del
@@ -497,16 +517,18 @@ si la transcripción actual lo contradice, prevalece la transcripción.
 **Turno e historial efectivo.** Un turno es un par user + assistant (el
 mensaje de usuario completo, con adjuntos, y la estimación en JSON). El
 **historial efectivo** es el número de pares previos que se envían al LLM:
-siempre `≤ MAX_TURNS` (6 por defecto). A ellos se suman el system prompt
+siempre `≤ MAX_CONVERSATION_TURNS` (6 por defecto). A ellos se suman el system prompt
 (posición 0, regenerado en cada llamada, nunca se descarta) y el mensaje
 del turno actual. Al superar el límite se descartan los pares más antiguos.
-`MAX_TURNS` se configura por entorno.
+`MAX_CONVERSATION_TURNS` se configura por entorno (`MAX_TURNS` se sigue
+aceptando como nombre antiguo). Los pares descartados no se pierden del
+todo: ver "Memoria a largo plazo" más abajo.
 
 **Límites configurables** (`.env`, ver `.env.example`):
 
 | Variable | Por defecto |
 |---|---|
-| `MAX_TURNS` | 6 |
+| `MAX_CONVERSATION_TURNS` | 6 |
 | `SESSION_TTL_MINUTES` (expiración por inactividad) | 60 |
 | `MAX_SESSIONS` (al llegar, `POST /sessions` → `503`) | 1000 |
 | `MAX_TRANSCRIPT_CHARS` | 20 000 |
@@ -544,6 +566,105 @@ sesión más antigua, que podría ser la conversación activa de otro usuario.
 `uvicorn.exe`) y `uv run streamlit run streamlit_app.py`. Tests:
 `uv run pytest` (los de sesiones están en `tests/sessions/` y no usan red
 ni claves: un LLM falso se inyecta con `app.dependency_overrides`).
+
+## Sesión 06: memoria a largo plazo, tier dinámico, Actor-Critic-Boss y evals
+
+### Arquitectura (hexagonal)
+
+```
+HTTP (routers/sessions.py) ──> SessionEstimationService ──> application/
+                                  (orquesta un turno)        ├─ EstimationEngine (actor / ACB)
+                                                             └─ MemoryMaintainer (anclas, resumen, metadata)
+domain/  (puro: sin FastAPI, LiteLLM, Jinja ni settings)
+  memory · anchors · metadata · tiering · review · usage
+ports:   app/ports/llm.py (StructuredLLM)  ·  app/conversation/ports.py
+adapters: LLMGateway (LiteLLM)  ·  conversation/adapters/llm_*.py (prompts + LLM)
+composición: app/dependencies.py (único sitio que conecta puertos y adaptadores)
+```
+
+### Qué se inyecta en cada turno
+
+```
+system  ← config del turno + <project_metadata> + <conversation_summary> + <anchors>
+ventana ← últimos MAX_CONVERSATION_TURNS pares (user, assistant) literales
+user    ← <transcript> + <attachment_content> del turno actual
+```
+
+- **Anclas heurísticas** (`domain/anchors.py`, sin LLM): frases de la
+  transcripción con presupuesto, plazo, equipo, restricción o decisión
+  tecnológica. Se calculan al guardar el turno y se **promueven solo cuando
+  ese turno sale de la ventana** (mientras está dentro ya viaja literal).
+  Máximo `MAX_ANCHORS`, sin duplicados; se descartan las más antiguas.
+- **Summarizer acumulativo** (`adapters/llm_summarizer.py`): una llamada
+  fast por cada turno expulsado (resumen anterior + turno → resumen nuevo,
+  máx. 3000 caracteres). Con la ventana de 6, los 6 primeros turnos no
+  tienen coste de resumen.
+- Ni el summarizer ni el extractor hacen fallar el turno: ante un fallo se
+  conserva lo anterior (warning sin contenido).
+
+### Tier dinámico
+
+`TierPolicy` (`domain/tiering.py`) evalúa reglas en orden; gana la primera:
+`large_attachments` → `long_transcript` → `low_previous_confidence` →
+`complexity_keywords` → `long_conversation` → `default` (fast). Con
+`TIER_MODE=off`, siempre fast (`tier_mode_off`). El tier es abstracto: el
+gateway tiene una cadena de proveedores por tier (`*_MODEL` para fast,
+`*_STRONG_MODEL` para strong, por defecto `claude-sonnet-5-5` / `gpt-4o`).
+Sonnet 5.5 rechaza `tool_choice` forzado y `temperature`, así que con él la
+salida estructurada se pide como JSON en el texto (Instructor `MD_JSON`).
+
+### Actor-Critic-Boss (opcional)
+
+`?mode=acb` en el turno, o `ESTIMATION_MODE=acb` por defecto. El critic
+revisa la estimación del actor (`CriticReport`: `ok` / `revise` + issues);
+solo si pide revisión, el boss (tier strong) produce la estimación final.
+Si el critic o el boss fallan, se devuelve la del actor.
+
+### Observabilidad
+
+Cada llamada al LLM devuelve un `LLMUsage` (`latency_ms`, `tokens_in`,
+`tokens_out`, `cost_usd`, `model`, `provider`). El coste sale de
+`MODEL_COSTS` ([`app/services/llm_pricing.py`](app/services/llm_pricing.py))
+y, si el modelo no está, de LiteLLM (`None` si nadie lo conoce). Cada turno
+acumula el uso por rol (actor, critic, boss, summarizer,
+metadata_extractor) y `GET /sessions/{id}` lo expone junto con
+`message_count`, `anchors_count`, `summary_chars`, `last_resolved_tier` y
+`last_tier_rule`.
+
+| Variable | Por defecto |
+|---|---|
+| `SESSION_PROMPT_VERSION` | `v5` |
+| `MAX_ANCHORS` | 12 |
+| `SUMMARIZER_MAX_TOKENS` | 1024 |
+| `TIER_MODE` (`off` \| `dynamic`) | `dynamic` |
+| `TIER_ATTACHMENT_CHARS_THRESHOLD` / `TIER_TRANSCRIPT_CHARS_THRESHOLD` | 8000 / 6000 |
+| `TIER_LOW_CONFIDENCE_PCT` | 60 |
+| `ANTHROPIC_STRONG_MODEL` / `OPENAI_STRONG_MODEL` | `claude-sonnet-5-5` / `gpt-4o` |
+| `ESTIMATION_MODE` (`actor` \| `acb`) | `actor` |
+
+### Evals
+
+`evals/golden_dataset.json` tiene 16 casos: 10 de un solo turno de varios
+tipos, 2 fuera de alcance, 2 de memoria con ventana reducida (el
+presupuesto o el equipo del turno 1 deben sobrevivir a la ventana), 1 de
+cambio de alcance y 1 de migración legacy (fuerza el tier strong). Tres
+métricas binarias y deterministas:
+
+- `SchemaAdherenceMetric`: la salida es un `EstimationResult` válido.
+- `CostBoundsMetric`: el coste cae en la horquilla del caso (o es fuera de
+  alcance cuando debe).
+- `ContentRecallMetric`: aparecen al menos `min_recall` de los términos
+  esperados (con alternativas `a|b`, sin distinguir tildes).
+
+```bash
+uv run python -m evals.run --mode actor
+uv run python -m evals.run --mode acb --out evals_acb.json
+uv run python -m evals.run --mode actor --cases memoria_presupuesto,oos_vago
+```
+
+Llama al LLM real con la configuración del `.env` (gasta dinero; no va en
+el CI). Imprime acierto por métrica, coste y latencia por caso y en total;
+comparar `actor` con `acb` dice si la revisión compensa su coste.
 
 ## Wrapper de proveedores LLM (LiteLLM)
 

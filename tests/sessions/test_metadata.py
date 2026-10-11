@@ -3,7 +3,9 @@
 import json
 import re
 
-from app.metadata_extractor import MetadataExtractor, merge_metadata
+from app.conversation.adapters.llm_metadata_extractor import LLMMetadataExtractor
+from app.conversation.application.memory_maintainer import MemoryMaintainer
+from app.conversation.domain.memory import ConversationMemory
 from app.prompts.loader import render_metadata_extractor_prompt, render_session_system_prompt
 from app.schemas import (
     MIN_CONFIDENCE_CONTEXT_KEY,
@@ -12,7 +14,7 @@ from app.schemas import (
     OutputFormat,
     ProjectType,
 )
-from app.sessions import MAX_TECHNOLOGIES, ProjectMetadata
+from app.conversation.domain.metadata import MAX_TECHNOLOGIES, ProjectMetadata, merge_metadata
 
 
 def test_scalars_only_update_when_the_new_value_is_not_none():
@@ -38,14 +40,20 @@ def test_agreed_scope_is_replaced_only_when_not_empty():
 
 
 class _RaisingGateway:
-    def complete_structured_messages(self, *args, **kwargs):
+    def complete_structured_with_usage(self, *args, **kwargs):
         raise TimeoutError("timeout")
 
 
 def test_extractor_failure_returns_the_current_metadata():
     current = ProjectMetadata(project_name="Atlas")
-    extractor = MetadataExtractor(_RaisingGateway(), max_tokens=256)
-    assert extractor.update(current, "u", "a") is current
+    extractor = LLMMetadataExtractor(_RaisingGateway(), max_tokens=256)
+    maintainer = MemoryMaintainer(summarizer=None, extractor=extractor)
+    update = maintainer.update(
+        ConversationMemory(max_turns=6, max_anchors=12), current,
+        transcript="t", user_message="u", assistant_message="a",
+    )
+    assert update.metadata is current
+    assert update.calls == ()
 
 
 def test_extractor_prompt_neutralizes_delimiters_in_the_turn():

@@ -16,7 +16,8 @@ from app.schemas import (
     OutputFormat,
     ProjectType,
 )
-from app.sessions import ProjectMetadata, SessionState
+from app.conversation.domain.metadata import ProjectMetadata
+from app.session_schemas import SessionState
 from estimation_view import plain, render
 from tests.conftest import VALID_RESULT
 
