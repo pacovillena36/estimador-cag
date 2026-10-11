@@ -20,3 +20,6 @@ wheels/
 # uv
 uv.lock.bak
 
+
+# Stress test: PDFs generados (se regeneran con evals.stress.fixtures.build_pdfs)
+evals/stress/fixtures/out/
