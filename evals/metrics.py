@@ -20,6 +20,7 @@ class MetricResult:
     name: str
     passed: bool
     detail: str
+    score: float | None = None  # 0.0-1.0 en las métricas graduales (evals/stress)
 
 
 class Metric(Protocol):
