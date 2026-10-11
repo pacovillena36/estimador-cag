@@ -158,6 +158,14 @@ class Settings(BaseSettings):
     # Extractor de project_metadata (segunda llamada al LLM por turno).
     metadata_extractor_max_tokens: int = Field(512, ge=64, le=4096)
 
+    # Depuración para evals/stress (desactivados en producción):
+    # - EXPOSE_TURN_OBSERVATION: GET /sessions/{id} incluye
+    #   last_turn_observation (solo contadores, sin contenido).
+    # - EXPOSE_SESSION_MEMORY_DEBUG: incluye además el TEXTO del resumen y de
+    #   las anclas (puede contener datos del cliente; solo en local).
+    expose_turn_observation: bool = False
+    expose_session_memory_debug: bool = False
+
     # Caché exact-match de respuestas del LLM (en memoria, por proceso)
     llm_cache_enabled: bool = True
     llm_cache_ttl_seconds: int = 3600

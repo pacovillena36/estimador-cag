@@ -15,6 +15,8 @@ pueden intercalar historial ni metadata):
 8. MemoryMaintainer: guardar el turno, anclas, resumen (si un turno sale de
    la ventana) y project_metadata. Nunca hace fallar el turno.
 9. Telemetría de la sesión: tier, regla y uso de todas las llamadas.
+10. Un único evento `turn_observed` (TurnObservation) con los contadores
+    agregados del turno; se guarda también en la sesión.
 
 La memoria solo avanza en turnos completados con éxito: cualquier error de
 los pasos 1-7 sale como excepción antes del paso 8.
@@ -29,8 +31,10 @@ llamada (SessionTelemetry).
 """
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from functools import partial
+
+import time
 
 import structlog
 from fastapi import UploadFile
@@ -47,9 +51,10 @@ from app.conversation.application.estimation_engine import EngineOutcome, Estima
 from app.conversation.application.memory_maintainer import MemoryMaintainer
 from app.conversation.domain.review import EstimationMode
 from app.conversation.domain.tiering import TierDecision, TierPolicy, TierSignals
-from app.conversation.domain.usage import TurnUsage
+from app.conversation.domain.usage import CallRole, TurnUsage
 from app.conversation.ports import ConversationSnapshot
 from app.guardrails.pipeline import InputPipeline, OutputPipeline, description_hash
+from app.observability.turn_observation import TURN_OBSERVED_EVENT, CacheHitKind, TurnObservation
 from app.prompts.loader import render_session_system_prompt
 from app.schemas import (
     DetailLevel,
@@ -57,7 +62,7 @@ from app.schemas import (
     OutputFormat,
     ProjectType,
 )
-from app.sessions import Session
+from app.sessions import Session, short_session_id
 
 log = structlog.get_logger(__name__)
 
@@ -80,6 +85,14 @@ class TurnOutcome:
     mode: EstimationMode
     usage: TurnUsage
     engine: EngineOutcome
+    observation: TurnObservation
+
+
+def _cache_hit_kind(usage: TurnUsage) -> CacheHitKind:
+    """El turno cuenta como cache hit si la llamada del actor salió de la
+    caché exact-match del gateway (las demás llamadas son auxiliares)."""
+    actor = usage.by_role(CallRole.ACTOR)
+    return "exact" if actor and all(c.usage.cached for c in actor) else "none"
 
 
 def _guardrail_text(transcript: str, attachments: Sequence[ExtractedAttachment]) -> str:
@@ -113,6 +126,7 @@ class SessionEstimationService:
     async def estimate_turn(
         self, session: Session, turn: TurnInput, uploads: Sequence[UploadFile]
     ) -> TurnOutcome:
+        started = time.perf_counter()
         mode = turn.mode or self._default_mode
         structlog.contextvars.bind_contextvars(
             prompt_version=self._prompt_version,
@@ -191,7 +205,24 @@ class SessionEstimationService:
                 anchors=len(session.memory.anchors),
                 summary_chars=len(session.memory.summary),
             )
-            return TurnOutcome(response, decision, mode, usage, outcome)
+            observation = TurnObservation(
+                turn_index=session.memory.history.recorded,
+                session_id=short_session_id(session.session_id),
+                enriched_transcript_chars=len(user_message),
+                attachments_total_chars=sum(len(a.text) for a in attachments),
+                messages_in_window=session.memory.message_count,
+                anchors_count=len(session.memory.anchors),
+                summary_chars=len(session.memory.summary),
+                tokens_in=usage.tokens_in,
+                tokens_out=usage.tokens_out,
+                cost_usd=usage.cost_usd,
+                latency_ms=round((time.perf_counter() - started) * 1000),
+                cache_hit_kind=_cache_hit_kind(usage),
+                last_resolved_tier=decision.tier.value,
+            )
+            session.last_turn_observation = observation
+            log.info(TURN_OBSERVED_EVENT, **asdict(observation))
+            return TurnOutcome(response, decision, mode, usage, outcome, observation)
 
     def _system_prompt(self, session: Session, turn: TurnInput) -> str:
         return render_session_system_prompt(

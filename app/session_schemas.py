@@ -1,12 +1,17 @@
 """Contrato HTTP de las sesiones conversacionales (lo reutiliza el cliente
 Streamlit). Solo contadores y metadata: nunca el texto del resumen ni de las
-anclas, que pueden contener datos del cliente."""
+anclas, que pueden contener datos del cliente. La única excepción es
+`memory_debug`, que solo aparece con EXPOSE_SESSION_MEMORY_DEBUG (evals en
+local, desactivado por defecto)."""
 
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 
 from app.conversation.domain.metadata import ProjectMetadata
+from app.observability.turn_observation import TurnObservation
 
 
 class SessionCreated(BaseModel):
@@ -24,6 +29,11 @@ class SessionUsage(BaseModel):
     total_tokens_out: int = 0
 
 
+class SessionMemoryDebug(BaseModel):
+    summary: str = Field(description="Resumen acumulado (texto).")
+    anchors: list[str] = Field(default_factory=list, description="Texto de las anclas.")
+
+
 class SessionState(BaseModel):
     session_id: UUID
     project_metadata: ProjectMetadata = Field(description="Hechos acumulados del proyecto.")
@@ -34,3 +44,19 @@ class SessionState(BaseModel):
     last_resolved_tier: str | None = Field(default=None, description="Tier del último turno (fast | strong).")
     last_tier_rule: str | None = Field(default=None, description="Regla que decidió ese tier.")
     usage: SessionUsage = Field(default_factory=SessionUsage)
+    last_turn_observation: TurnObservation | None = Field(
+        default=None, description="Solo con EXPOSE_TURN_OBSERVATION (contadores del último turno)."
+    )
+    memory_debug: SessionMemoryDebug | None = Field(
+        default=None, description="Solo con EXPOSE_SESSION_MEMORY_DEBUG (texto de resumen y anclas)."
+    )
+
+    @model_serializer(mode="wrap")
+    def _omit_disabled_debug(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        # Con los flags desactivados (producción) las claves de depuración
+        # ni siquiera aparecen: el contrato público no cambia.
+        data = handler(self)
+        for key in ("last_turn_observation", "memory_debug"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data

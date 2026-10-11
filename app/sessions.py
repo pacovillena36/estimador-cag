@@ -23,6 +23,7 @@ from uuid import UUID, uuid4
 from app.conversation.domain.memory import ConversationHistory, ConversationMemory
 from app.conversation.domain.metadata import ProjectMetadata
 from app.conversation.domain.usage import SessionTelemetry
+from app.observability.turn_observation import TurnObservation
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
@@ -38,6 +39,8 @@ class Session:
     telemetry: SessionTelemetry = field(default_factory=SessionTelemetry)
     # Confianza de la última estimación en alcance (señal del tier dinámico).
     last_confidence_pct: int | None = None
+    # Observación agregada del último turno completado (evento turn_observed).
+    last_turn_observation: TurnObservation | None = None
     # Serializa los turnos de una misma sesión (dos peticiones simultáneas
     # no pueden intercalar historial ni metadata).
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)

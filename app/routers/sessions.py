@@ -19,7 +19,7 @@ from app.schemas import (
     ProjectType,
 )
 from app.services.session_estimation import SessionEstimationService, TurnInput
-from app.session_schemas import SessionCreated, SessionState, SessionUsage
+from app.session_schemas import SessionCreated, SessionMemoryDebug, SessionState, SessionUsage
 from app.sessions import Session, SessionNotFoundError, SessionStore, short_session_id
 
 log = structlog.get_logger(__name__)
@@ -59,11 +59,13 @@ async def create_session(store: SessionStore = Depends(get_session_store)) -> Se
     summary="Estado de la sesión: metadata, memoria, tier y uso del LLM (contadores)",
     responses=NOT_FOUND,
 )
-async def read_session(session: Session = Depends(get_session)) -> SessionState:
-    return _session_state(session)
+async def read_session(
+    session: Session = Depends(get_session), settings: Settings = Depends(get_settings)
+) -> SessionState:
+    return _session_state(session, settings)
 
 
-def _session_state(session: Session) -> SessionState:
+def _session_state(session: Session, settings: Settings) -> SessionState:
     memory, telemetry = session.memory, session.telemetry
     last = telemetry.last_turn
     return SessionState(
@@ -84,6 +86,12 @@ def _session_state(session: Session) -> SessionState:
             total_cost_usd=telemetry.total_cost_usd,
             total_tokens_in=telemetry.total_tokens_in,
             total_tokens_out=telemetry.total_tokens_out,
+        ),
+        last_turn_observation=session.last_turn_observation if settings.expose_turn_observation else None,
+        memory_debug=(
+            SessionMemoryDebug(summary=memory.summary, anchors=[a.text for a in memory.anchors])
+            if settings.expose_session_memory_debug
+            else None
         ),
     )
 
