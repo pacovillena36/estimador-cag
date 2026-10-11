@@ -1,0 +1,10 @@
+# Override SOLO para el stress test del CAG (evals/stress). Activa los flags
+# de depuración que exponen last_turn_observation y el texto de la memoria
+# en GET /sessions/{id}. Nunca en producción.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.stress.yml up -d --build
+services:
+  api:
+    environment:
+      - EXPOSE_TURN_OBSERVATION=true
+      - EXPOSE_SESSION_MEMORY_DEBUG=true
