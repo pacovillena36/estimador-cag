@@ -157,7 +157,9 @@ def latency_vs_tokens(rows: Sequence[Row]) -> str:
 
 
 def cumulative_cost(rows: Sequence[Row]) -> str:
-    ok = _ok(rows)
+    # Sin cache hits: un hit cuesta 0 y promediarlo mezclaría el efecto
+    # caché con el coste del CAG.
+    ok = _no_cache(_ok(rows))
     scenarios = _ordered(r["scenario"] for r in ok)
     by_turn: dict[tuple[str, int], list[float]] = defaultdict(list)
     for row in ok:
@@ -171,10 +173,37 @@ def cumulative_cost(rows: Sequence[Row]) -> str:
             mean = _mean(by_turn.get((scenario, int(turn)), []))
             if mean is not None:
                 running[scenario] += mean
-            cells.append(f"{_fmt(mean, '{:.5f}')} / {running[scenario]:.4f}")
+            tiers = Counter(r["last_resolved_tier"] for r in ok if r["scenario"] == scenario and r["turn"] == turn)
+            tier = f" [{tiers.most_common(1)[0][0]}]" if tiers else ""
+            cells.append(f"{_fmt(mean, '{:.5f}')} / {running[scenario]:.4f}{tier}")
         body.append(cells)
-    note = "Cada celda: coste medio del turno / acumulado medio de una conversación (USD), todos los tamaños de adjunto."
+    note = (
+        "Cada celda: coste medio del turno / acumulado de esas medias (USD), solo turnos sin cache hit, "
+        "todos los tamaños de adjunto; entre corchetes, el tier mayoritario del turno."
+    )
     return note + "\n\n" + _table(["turno", *scenarios], body)
+
+
+def by_tier(rows: Sequence[Row]) -> str:
+    rows = _no_cache(_ok(rows))
+    body = []
+    for tier in _ordered(r["last_resolved_tier"] for r in rows):
+        group = [r for r in rows if r["last_resolved_tier"] == tier]
+        latency = _values(group, "latency_ms")
+        body.append(
+            [
+                tier,
+                str(len(group)),
+                _fmt(_mean(_values(group, "tokens_in"))),
+                _fmt(_mean(_values(group, "tokens_out"))),
+                _fmt(_mean(_values(group, "cost_usd")), "{:.5f}"),
+                _fmt(percentile(latency, 50)),
+                _fmt(_rate(group, lambda r: r["cost_ok"] == "True"), "{:.0%}"),
+                _fmt(_rate(group, lambda r: r["latency_ok"] == "True"), "{:.0%}"),
+            ]
+        )
+    header = ["tier", "turnos", "tokens_in medio", "tokens_out medio", "coste medio USD", "P50 ms", "cost_ok", "latency_ok"]
+    return _table(header, body)
 
 
 def drift_by_checkpoint(rows: Sequence[Row]) -> str:
@@ -237,6 +266,7 @@ def render(rows: Sequence[Row], csv_path: Path) -> str:
         ("Tabla resumen (escenario × adjunto)", summary_table(rows)),
         ("Curva 1 · latency_ms vs tokens_in (sin cache hits)", latency_vs_tokens(rows)),
         ("Curva 2 · cost_usd acumulado vs turn_index", cumulative_cost(rows)),
+        ("Coste y latencia por tier (sin cache hits)", by_tier(rows)),
         ("Curva 3 · MemoryDriftMetric (recall) vs N", drift_by_checkpoint(rows)),
         ("Recall de canarios del adjunto (truncado)", canary_recall(rows)),
     ]
