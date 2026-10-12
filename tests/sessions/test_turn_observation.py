@@ -8,6 +8,7 @@ import typing
 
 import pytest
 
+from app.config import Settings
 from app.guardrails.moderation import get_moderation_client
 from app.observability.turn_observation import TURN_OBSERVED_EVENT, TurnObservation
 from app.services.llm_gateway import get_llm_gateway
@@ -112,7 +113,18 @@ async def test_event_never_carries_conversation_text(client, caplog):
     assert all(not isinstance(v, str) or "Zafiro" not in v for v in observed(caplog)[0].values())
 
 
-async def test_state_hides_observation_and_memory_by_default(client):
+def test_debug_flags_are_off_by_default():
+    # El valor por defecto del código, no el del entorno: LiteLLM vuelca el
+    # .env local en os.environ al importarse.
+    assert Settings.model_fields["expose_turn_observation"].default is False
+    assert Settings.model_fields["expose_session_memory_debug"].default is False
+
+
+# Flags apagados explícitamente: el test no depende del .env del desarrollador.
+@pytest.mark.parametrize(
+    "session_settings", [{"expose_turn_observation": False, "expose_session_memory_debug": False}]
+)
+async def test_state_hides_observation_and_memory_when_flags_are_off(client):
     session_id = await create_session(client)
     await turn(client, session_id, SECRET)
     info = await state(client, session_id)
