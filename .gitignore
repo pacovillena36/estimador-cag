@@ -23,3 +23,6 @@ uv.lock.bak
 
 # Stress test: PDFs generados (se regeneran con evals.stress.fixtures.build_pdfs)
 evals/stress/fixtures/out/
+# Stress test: solo results.csv es entregable; el resto de CSV son pruebas locales
+evals/stress/*.csv
+!evals/stress/results.csv
