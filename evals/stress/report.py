@@ -88,9 +88,12 @@ def _ordered(values: Iterable[str], key: Callable[[str], object] = str) -> list[
 
 def setup_section(rows: Sequence[Row], csv_path: Path) -> str:
     ok = _ok(rows)
-    commit = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, cwd=STRESS_DIR, check=False
-    ).stdout.strip()
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, cwd=STRESS_DIR, check=False
+        ).stdout.strip()
+    except OSError:  # sin git instalado (p. ej. en un contenedor)
+        commit = ""
     tiers = Counter(r["last_resolved_tier"] for r in ok)
     errors = Counter(r["error"] for r in rows if r["error"])
     conversations = {(r["scenario"], r["attachment_kb"], r["repeat"]) for r in rows}
