@@ -236,9 +236,9 @@ def test_report_renders_from_csv_rows_and_keeps_manual_text(tmp_path):
         parsed = list(csv.DictReader(handle))
 
     text = report.render(parsed, path)
-    assert "| contradiction | 0 | 5 |" in text  # 5 turnos completados de 6
-    assert "`http_502:estimation_failed` x1" in text
-    assert "| contradiction | 3 |" in text and "| contradiction | 6 |" in text
+    assert "| Presupuesto corregido | sin documento | 5 de 6 (cortada en el 6) |" in text
+    assert "1 × `http_502:estimation_failed`" in text
+    assert "| Presupuesto corregido | 3 |" in text and "| Presupuesto corregido | 6 |" in text
 
     md = tmp_path / "REPORT.md"
     md.write_text(f"# R\n\nantes\n\n{report.BEGIN}\nviejo\n{report.END}\n\ndespués\n", encoding="utf-8")

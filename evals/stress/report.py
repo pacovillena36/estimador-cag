@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from evals.stress.scenarios import CHECKPOINTS
+from evals.stress.scenarios import TURNS_PER_SCENARIO as TURNS
 
 STRESS_DIR = Path(__file__).resolve().parent
 DEFAULT_CSV = STRESS_DIR / "results.csv"
@@ -84,135 +85,170 @@ def _ordered(values: Iterable[str], key: Callable[[str], object] = str) -> list[
 
 
 # ----------------------------------------------------------------- tablas
+#
+# Escritas para un lector no técnico: encabezados en lenguaje funcional y
+# una pregunta por tabla. Criterios comunes:
+# - Coste y tiempo de espera salen solo de los mensajes que consultaron de
+#   verdad a la IA (sin cache hit).
+# - La memoria se mide en la primera repetición de cada conversación: las
+#   repeticiones con los mismos textos son copias servidas por la caché.
+
+SCENARIO_LABELS = {
+    "growing": "Proyecto que crece",
+    "pivot": "Cambio de tecnología",
+    "contradiction": "Presupuesto corregido",
+}
+TIER_LABELS = {"fast": "barato (gpt-4o-mini)", "strong": "potente (gpt-4o)"}
+
+
+def _label(scenario: str) -> str:
+    return SCENARIO_LABELS.get(scenario, scenario)
+
+
+def _scenario_order(scenario: str) -> int:
+    order = list(SCENARIO_LABELS)
+    return order.index(scenario) if scenario in order else len(order)
+
+
+def _doc(kb: str) -> str:
+    return "sin documento" if kb == "0" else f"{kb}k caracteres"
+
+
+def _first_repeat(rows: Iterable[Row]) -> list[Row]:
+    return [r for r in rows if r["repeat"] == "1"]
+
+
+def _seconds(ms: float | None) -> str:
+    return _fmt(None if ms is None else ms / 1000, "{:.1f} s")
+
+
+def _yes_no(value: bool | None) -> str:
+    return {True: "sí", False: "no", None: "–"}[value]
 
 
 def setup_section(rows: Sequence[Row], csv_path: Path) -> str:
     ok = _ok(rows)
+    real = _no_cache(ok)
     try:
         commit = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, cwd=STRESS_DIR, check=False
         ).stdout.strip()
     except OSError:  # sin git instalado (p. ej. en un contenedor)
         commit = ""
-    tiers = Counter(r["last_resolved_tier"] for r in ok)
     errors = Counter(r["error"] for r in rows if r["error"])
     conversations = {(r["scenario"], r["attachment_kb"], r["repeat"]) for r in rows}
     lines = [
-        f"- Tablas generadas: {datetime.now(UTC):%Y-%m-%d %H:%M} UTC · commit `{commit or '?'}` · CSV `{csv_path.name}`",
-        f"- Filas: {len(rows)} ({len(ok)} turnos completados, {len(rows) - len(ok)} fallidos) en {len(conversations)} conversaciones",
-        f"- Turnos por tier: {dict(tiers)}",
-        f"- Coste total observado: {sum(_values(ok, 'cost_usd')):.4f} USD",
+        f"- Tablas generadas el {datetime.now(UTC):%Y-%m-%d} (commit `{commit or '?'}`) a partir de `{csv_path.name}`.",
+        f"- {len(conversations)} conversaciones y {len(rows)} mensajes enviados: {len(real)} consultaron de verdad "
+        f"a la IA, {len(ok) - len(real)} se sirvieron desde la caché y {len(rows) - len(ok)} fallaron.",
+        f"- Gasto total real: {sum(_values(ok, 'cost_usd')):.2f} USD.",
     ]
     if errors:
-        lines.append("- Errores: " + ", ".join(f"`{e}` x{n}" for e, n in errors.most_common()))
+        lines.append("- Fallos: " + ", ".join(f"{n} × `{e}`" for e, n in errors.most_common()) + ".")
     return "\n".join(lines)
 
 
 def summary_table(rows: Sequence[Row]) -> str:
     groups: dict[tuple[str, str], list[Row]] = defaultdict(list)
-    for row in _ok(rows):
+    for row in _first_repeat(rows):
         groups[(row["scenario"], row["attachment_kb"])].append(row)
     body = []
-    for (scenario, kb), group in sorted(groups.items(), key=lambda g: (g[0][0], int(g[0][1]))):
-        latency, latency_nc = _values(group, "latency_ms"), _values(_no_cache(group), "latency_ms")
+    for (scenario, kb), group in sorted(groups.items(), key=lambda g: (_scenario_order(g[0][0]), int(g[0][1]))):
+        ok = _ok(group)
+        real = _no_cache(ok)
+        latency = _values(real, "latency_ms")
+        last = max(ok, key=lambda r: int(r["turn"])) if ok else None
+        slow = sum(1 for r in real if r["latency_ok"] == "False")
+        sent = max(int(r["turn"]) for r in group)
         body.append(
             [
-                scenario,
-                kb,
-                str(len(group)),
-                _fmt(percentile(latency, 50)),
-                _fmt(percentile(latency, 95)),
-                _fmt(percentile(latency_nc, 50)),
-                _fmt(percentile(latency_nc, 95)),
-                _fmt(sum(_values(group, "cost_usd")), "{:.4f}"),
-                _fmt(_rate(group, lambda r: r["cache_hit_kind"] == "exact"), "{:.0%}"),
-                _fmt(_rate(group, lambda r: r["cache_hit_kind"] == "semantic"), "{:.0%}"),
-                _fmt(_mean(_values(group, "drift_recall")), "{:.0%}"),
+                _label(scenario),
+                _doc(kb),
+                f"{len(ok)} de {sent}" + ("" if sent == TURNS else f" (cortada en el {sent})"),
+                _fmt(sum(_values(ok, "cost_usd")), "{:.2f} $"),
+                _seconds(percentile(latency, 50)),
+                _seconds(percentile(latency, 95)),
+                f"{slow} de {len(real)}",
+                _fmt(_num(last["drift_recall"]) if last else None, "{:.0%}"),
+                _yes_no(_bool(last["first_fact_found"]) if last else None),
+                _yes_no(_bool(last["stale_fact_present"]) if last else None),
             ]
         )
     header = [
-        "escenario", "adjunto KB", "turnos", "P50 ms", "P95 ms", "P50 ms sin caché", "P95 ms sin caché",
-        "coste USD", "exact hit", "semantic hit", "recall medio",
+        "Conversación", "Documento", "Mensajes completados", "Coste", "Espera habitual", "Espera en el peor caso",
+        "Mensajes de más de 15 s", "Recuerdo al final", "¿Recuerda el nombre?", "¿Arrastra el dato corregido?",
     ]  # fmt: skip
     return _table(header, body)
 
 
 def latency_vs_tokens(rows: Sequence[Row]) -> str:
-    rows = _no_cache(_ok(rows))
+    real = _no_cache(_ok(rows))
     body = []
     for low, high in zip(TOKEN_BUCKETS, (*TOKEN_BUCKETS[1:], None), strict=True):
-        group = [r for r in rows if low <= float(r["tokens_in"]) < (high or float("inf"))]
+        group = [r for r in real if low <= float(r["tokens_in"]) < (high or float("inf"))]
         if not group:
             continue
         latency = _values(group, "latency_ms")
-        label = f"{low // 1000}k–{high // 1000}k" if high else f">= {low // 1000}k"
+        label = f"de {low // 1000}k a {high // 1000}k" if high else f"más de {low // 1000}k"
         body.append(
             [
                 label,
                 str(len(group)),
-                _fmt(_mean(_values(group, "tokens_in"))),
-                _fmt(percentile(latency, 50)),
-                _fmt(percentile(latency, 95)),
-                _fmt(_mean(_values(group, "cost_usd")), "{:.5f}"),
+                _seconds(percentile(latency, 50)),
+                _seconds(percentile(latency, 95)),
+                _fmt(_mean(_values(group, "cost_usd")), "{:.3f} $"),
             ]
         )
-    return _table(["tokens_in (turno)", "turnos", "tokens_in medio", "P50 ms", "P95 ms", "coste medio USD"], body)
+    header = ["Texto que lee la IA (tokens)", "Mensajes", "Espera habitual", "Espera en el peor caso", "Coste medio"]
+    return _table(header, body)
 
 
 def cumulative_cost(rows: Sequence[Row]) -> str:
-    # Sin cache hits: un hit cuesta 0 y promediarlo mezclaría el efecto
-    # caché con el coste del CAG.
-    ok = _no_cache(_ok(rows))
-    scenarios = _ordered(r["scenario"] for r in ok)
-    by_turn: dict[tuple[str, int], list[float]] = defaultdict(list)
-    for row in ok:
-        by_turn[(row["scenario"], int(row["turn"]))].append(float(row["cost_usd"]))
-    turns = _ordered((r["turn"] for r in ok), key=int)
+    real = _no_cache(_ok(rows))
+    scenarios = [s for s in SCENARIO_LABELS if any(r["scenario"] == s for r in real)]
+    by_turn: dict[tuple[str, int], list[Row]] = defaultdict(list)
+    for row in real:
+        by_turn[(row["scenario"], int(row["turn"]))].append(row)
     running = dict.fromkeys(scenarios, 0.0)
     body = []
-    for turn in turns:
-        cells = [turn]
+    for turn in range(1, TURNS + 1):
+        cells = [str(turn)]
         for scenario in scenarios:
-            mean = _mean(by_turn.get((scenario, int(turn)), []))
+            group = by_turn.get((scenario, turn), [])
+            mean = _mean(_values(group, "cost_usd"))
             if mean is not None:
                 running[scenario] += mean
-            tiers = Counter(r["last_resolved_tier"] for r in ok if r["scenario"] == scenario and r["turn"] == turn)
-            tier = f" [{tiers.most_common(1)[0][0]}]" if tiers else ""
-            cells.append(f"{_fmt(mean, '{:.5f}')} / {running[scenario]:.4f}{tier}")
+            strong = _rate(group, lambda r: r["last_resolved_tier"] == "strong")
+            model = "" if strong is None else (" · potente" if strong >= 0.5 else " · barato")
+            cells.append(f"{_fmt(mean, '{:.3f}')} → {running[scenario]:.2f}{model}")
         body.append(cells)
-    note = (
-        "Cada celda: coste medio del turno / acumulado de esas medias (USD), solo turnos sin cache hit, "
-        "todos los tamaños de adjunto; entre corchetes, el tier mayoritario del turno."
-    )
-    return note + "\n\n" + _table(["turno", *scenarios], body)
+    return _table(["Mensaje", *(_label(s) for s in scenarios)], body)
 
 
 def by_tier(rows: Sequence[Row]) -> str:
-    rows = _no_cache(_ok(rows))
+    real = _no_cache(_ok(rows))
     body = []
-    for tier in _ordered(r["last_resolved_tier"] for r in rows):
-        group = [r for r in rows if r["last_resolved_tier"] == tier]
-        latency = _values(group, "latency_ms")
+    for tier in ("fast", "strong"):
+        group = [r for r in real if r["last_resolved_tier"] == tier]
+        if not group:
+            continue
         body.append(
             [
-                tier,
+                TIER_LABELS[tier],
                 str(len(group)),
-                _fmt(_mean(_values(group, "tokens_in"))),
-                _fmt(_mean(_values(group, "tokens_out"))),
-                _fmt(_mean(_values(group, "cost_usd")), "{:.5f}"),
-                _fmt(percentile(latency, 50)),
+                _fmt(_mean(_values(group, "cost_usd")), "{:.3f} $"),
+                _seconds(percentile(_values(group, "latency_ms"), 50)),
                 _fmt(_rate(group, lambda r: r["cost_ok"] == "True"), "{:.0%}"),
-                _fmt(_rate(group, lambda r: r["latency_ok"] == "True"), "{:.0%}"),
             ]
         )
-    header = ["tier", "turnos", "tokens_in medio", "tokens_out medio", "coste medio USD", "P50 ms", "cost_ok", "latency_ok"]
+    header = ["Modelo de IA", "Mensajes", "Coste medio por mensaje", "Espera habitual", "Dentro del presupuesto de coste"]
     return _table(header, body)
 
 
 def drift_by_checkpoint(rows: Sequence[Row]) -> str:
-    ok = _ok(rows)
+    ok = _ok(_first_repeat(rows))
     body = []
-    for scenario in _ordered(r["scenario"] for r in ok):
+    for scenario in SCENARIO_LABELS:
         for n in CHECKPOINTS:
             group = [r for r in ok if r["scenario"] == scenario and int(r["turn"]) == n]
             if not group:
@@ -221,57 +257,70 @@ def drift_by_checkpoint(rows: Sequence[Row]) -> str:
             stale = [b for r in group if (b := _bool(r["stale_fact_present"])) is not None]
             body.append(
                 [
-                    scenario,
+                    _label(scenario),
                     str(n),
-                    str(len(group)),
                     group[0]["facts_expected"],
                     _fmt(_mean(_values(group, "drift_recall")), "{:.0%}"),
                     _fmt(sum(first) / len(first) if first else None, "{:.0%}"),
                     _fmt(sum(stale) / len(stale) if stale else None, "{:.0%}"),
-                    _fmt(_mean(_values(group, "summary_chars"))),
-                    _fmt(_mean(_values(group, "anchors_count")), "{:.1f}"),
+                    str(len(group)),
                 ]
             )
-    header = ["escenario", "N", "muestras", "facts", "recall", "fact turno 1", "stale presente", "summary chars", "anclas"]
-    return _table(header, body)
-
-
-def canary_recall(rows: Sequence[Row]) -> str:
-    ok = [r for r in _ok(rows) if r["attachment_kb"] != "0"]
-    body = []
-    for kb in _ordered((r["attachment_kb"] for r in ok), key=int):
-        group = [r for r in ok if r["attachment_kb"] == kb]
-        first = [r for r in group if r["turn"] == "1"]
-        last_turn = max(int(r["turn"]) for r in group)
-        last = [r for r in group if int(r["turn"]) == last_turn]
-        body.append(
-            [
-                kb,
-                _fmt(_mean(_values(first, "attachments_total_chars"))),
-                group[0]["attachment_canaries_total"],
-                _fmt(_mean(_values(first, "attachment_canaries_sent")), "{:.1f}"),
-                _fmt(_mean(_values(first, "attachment_recall")), "{:.0%}"),
-                f"{_fmt(_mean(_values(last, 'attachment_recall')), '{:.0%}')} (turno {last_turn})",
-                _fmt(_mean(_values(first, "latency_ms"))),
-                ", ".join(f"{t}:{n}" for t, n in Counter(r["last_resolved_tier"] for r in first).items()),
-            ]
-        )
     header = [
-        "adjunto KB", "chars enviados (turno 1)", "canarios", "canarios enviados", "recall turno 1",
-        "recall final", "latencia turno 1 ms", "tier turno 1",
+        "Conversación", "Mensaje", "Datos a recordar", "Recuerdo medio", "Recuerda el nombre",
+        "Arrastra el dato corregido", "Conversaciones",
     ]  # fmt: skip
     return _table(header, body)
 
 
+def canary_recall(rows: Sequence[Row]) -> str:
+    ok = [r for r in _ok(_first_repeat(rows)) if r["attachment_kb"] != "0"]
+    body = []
+    for kb in _ordered((r["attachment_kb"] for r in ok), key=int):
+        group = [r for r in ok if r["attachment_kb"] == kb]
+        first = [r for r in group if r["turn"] == "1"]
+        scenarios = {r["scenario"] for r in group}
+        finals = [max((r for r in group if r["scenario"] == s), key=lambda r: int(r["turn"])) for s in scenarios]
+        sent = _mean(_values(first, "attachment_canaries_sent"))
+        body.append(
+            [
+                _doc(kb),
+                _fmt(_mean(_values(first, "attachments_total_chars"))),
+                f"{_fmt(sent)} de {group[0]['attachment_canaries_total']}",
+                _fmt(_mean(_values(finals, "attachment_recall")), "{:.0%}"),
+            ]
+        )
+    header = ["Documento adjunto", "Caracteres que lee la IA", "Marcas que llegan a la IA", "Marcas que recuerda al final"]
+    return _table(header, body)
+
+
+def cache_effect(rows: Sequence[Row]) -> str:
+    ok = _ok(rows)
+    body = []
+    for kind, label in (("none", "Consulta real a la IA"), ("exact", "Respuesta reutilizada (caché)")):
+        group = [r for r in ok if r["cache_hit_kind"] == kind]
+        if group:
+            body.append(
+                [
+                    label,
+                    str(len(group)),
+                    _seconds(percentile(_values(group, "latency_ms"), 50)),
+                    _fmt(_mean(_values(group, "cost_usd")), "{:.3f} $"),
+                ]
+            )
+    return _table(["Tipo de respuesta", "Mensajes", "Espera habitual", "Coste medio"], body)
+
+
 def render(rows: Sequence[Row], csv_path: Path) -> str:
     sections = [
-        ("Setup de la ejecución", setup_section(rows, csv_path)),
-        ("Tabla resumen (escenario × adjunto)", summary_table(rows)),
-        ("Curva 1 · latency_ms vs tokens_in (sin cache hits)", latency_vs_tokens(rows)),
-        ("Curva 2 · cost_usd acumulado vs turn_index", cumulative_cost(rows)),
-        ("Coste y latencia por tier (sin cache hits)", by_tier(rows)),
-        ("Curva 3 · MemoryDriftMetric (recall) vs N", drift_by_checkpoint(rows)),
-        ("Recall de canarios del adjunto (truncado)", canary_recall(rows)),
+        ("Datos de la ejecución", setup_section(rows, csv_path)),
+        ("Resumen por conversación", summary_table(rows)),
+        ("¿Cuánto cuesta cada mensaje? (coste del mensaje → acumulado, en USD)", cumulative_cost(rows)),
+        ("Modelo barato frente a modelo potente", by_tier(rows)),
+        ("¿Cuánto se espera según el texto que lee la IA?", latency_vs_tokens(rows)),
+        ("¿Cuánto recuerda a medida que avanza la conversación?", drift_by_checkpoint(rows)),
+        ("¿Qué pasa con los documentos adjuntos?", canary_recall(rows)),
+        ("Efecto de la caché", cache_effect(rows)),
     ]
     return "\n\n".join(f"### {title}\n\n{body}" for title, body in sections)
 
