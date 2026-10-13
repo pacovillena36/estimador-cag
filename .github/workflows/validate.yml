@@ -68,6 +68,12 @@ jobs:
           # fast). Para comprobar /health basta una clave ficticia: no se
           # llega a llamar a ningún proveedor.
           ANTHROPIC_API_KEY: ci-dummy-key
+          # La Moderation API también es obligatoria al arrancar (fail fast);
+          # el cliente no hace llamadas de red al crearse.
+          MODERATION_API_KEY: ci-dummy-key
+          # Sin Redis en CI: el caché semántico en shadow/active exige
+          # REDIS_URL y clave de embeddings al arrancar.
+          SEMANTIC_CACHE_MODE: "off"
         run: |
           uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 &
           SERVER_PID=$!
