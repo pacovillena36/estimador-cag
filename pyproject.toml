@@ -21,6 +21,8 @@ dependencies = [
     "redis==8.1.0",
     "pypdf==6.19.0",
     "python-docx==1.2.0",
+    "openai>=1.0.0",
+    "tiktoken>=0.7.0",
 ]
 
 [tool.uv]

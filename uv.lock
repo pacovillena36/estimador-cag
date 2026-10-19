@@ -428,6 +428,7 @@ dependencies = [
     { name = "instructor" },
     { name = "jinja2" },
     { name = "litellm" },
+    { name = "openai" },
     { name = "pydantic-settings" },
     { name = "pypdf" },
     { name = "python-docx" },
@@ -436,6 +437,7 @@ dependencies = [
     { name = "redisvl" },
     { name = "streamlit" },
     { name = "structlog" },
+    { name = "tiktoken" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -453,6 +455,7 @@ requires-dist = [
     { name = "instructor", specifier = ">=1.17.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "litellm", specifier = ">=1.102.1" },
+    { name = "openai", specifier = ">=1.0.0" },
     { name = "pydantic-settings" },
     { name = "pypdf", specifier = "==6.19.0" },
     { name = "python-docx", specifier = "==1.2.0" },
@@ -461,6 +464,7 @@ requires-dist = [
     { name = "redisvl", specifier = "==0.27.2" },
     { name = "streamlit", specifier = ">=1.64.0" },
     { name = "structlog", specifier = ">=26.1.0" },
+    { name = "tiktoken", specifier = ">=0.7.0" },
     { name = "uvicorn", extras = ["standard"] },
 ]
 

@@ -37,6 +37,12 @@ estimador-cag/
 │   │   ├── noop.py               # Caché nulo (modo off)
 │   │   └── factory.py            # get_semantic_cache() según la configuración
 │   ├── embeddings.py             # Cliente de embeddings (OpenAI) con timeout
+│   ├── embedding_pipeline/       # Sesión 07: presupuestos JSON -> chunks -> embeddings
+│   │   ├── schemas.py            # Budget, Chunk, EmbeddedChunk, IngestRequest/Response
+│   │   ├── chunker.py            # JSONStructuralChunker (un componente = un chunk)
+│   │   ├── embedder.py           # OpenAIEmbedder (text-embedding-3-small, batches, reintentos)
+│   │   ├── router.py             # POST /embeddings/ingest
+│   │   └── SANITY_CHECK.md       # Similitud de las tres parejas de validación
 │   ├── request_context.py        # RequestContext (tenant) fuera del body
 │   ├── sessions.py               # Agregado Session y SessionStore (memoria del proceso)
 │   ├── session_schemas.py        # Contrato HTTP de sesiones (SessionState de depuración)
@@ -76,6 +82,10 @@ estimador-cag/
 │   ├── dataset.py / metrics.py   # Casos validados y 3 métricas binarias
 │   ├── runner.py / executor.py   # Runner (puerto CaseExecutor) y adaptador con el servicio real
 │   └── run.py                    # CLI: uv run python -m evals.run --mode actor|acb
+├── data/
+│   └── budgets_sample.json       # 15 presupuestos normalizados (finance, ecommerce, healthcare, industrial)
+├── scripts/
+│   └── compare.py                # CLI: similitud coseno entre los embeddings de dos textos
 ├── tests/
 │   ├── conversation/             # Dominio y casos de uso del núcleo conversacional
 │   ├── evals/                    # Dataset, métricas y runner (sin LLM)
@@ -665,6 +675,90 @@ uv run python -m evals.run --mode actor --cases memoria_presupuesto,oos_vago
 Llama al LLM real con la configuración del `.env` (gasta dinero; no va en
 el CI). Imprime acierto por métrica, coste y latencia por caso y en total;
 comparar `actor` con `acb` dice si la revisión compensa su coste.
+
+## Sesión 07: pipeline de embeddings de presupuestos
+
+Primer paso hacia la búsqueda semántica: los presupuestos históricos
+normalizados (JSON) se trocean y se convierten en vectores. Todavía no se
+persisten (pgvector llega en la Sesión 08): el endpoint los devuelve por
+HTTP.
+
+```
+budgets JSON -> JSONStructuralChunker -> OpenAIEmbedder -> IngestResponse
+                (1 componente = 1 chunk)  (text-embedding-3-small, 1536 dims)
+```
+
+- **Chunker estructural** (`app/embedding_pipeline/chunker.py`): cada
+  componente del presupuesto es un chunk, sin overlap ni troceado por
+  tamaño. El texto embebido lleva delante el contexto del presupuesto padre
+  (proyecto, sector, año, tecnología principal) para que un componente
+  genérico como "Authentication backend" no pierda a qué cliente pertenece.
+  Los campos filtrables (`budget_id`, `component_id`, `client_sector`,
+  `main_technology`, `year`, `complexity`, `estimated_hours`) van en
+  `metadata` y no se embeben. `chunk_id` = `{budget_id}::{component_id}` y
+  `token_count` se cuenta con tiktoken (un chunk de más de 1000 tokens se
+  señala en los logs con `embeddings.large_chunk`).
+- **Embedder** (`app/embedding_pipeline/embedder.py`): batches de hasta 100
+  chunks por llamada, reintento ante `RateLimitError` (esperas de 1, 2 y 4
+  s) y el resto de errores se propagan. Cada batch se registra con
+  `embeddings.batch_embedded` (chunks, tokens, latencia). El coste estimado
+  usa `PRICE_USD_PER_MILLION_TOKENS` ($0.02 por millón de tokens; revisar
+  cuando cambie el precio). Usa `EMBEDDING_API_KEY` u, en su defecto,
+  `OPENAI_API_KEY`.
+
+### POST /embeddings/ingest
+
+Body: `{"budgets": [ ... ]}` (esquema en `app/embedding_pipeline/schemas.py`;
+`sector` admite `finance`, `ecommerce`, `healthcare` e `industrial`).
+Respuesta: `chunks` (cada uno con `chunk_id`, `text`, `metadata`,
+`token_count` y `embedding`) y `stats` (`total_budgets`, `total_chunks`,
+`total_tokens`, `estimated_cost_usd`). Códigos: 200, 422 (validación, o un
+componente que supera los 8191 tokens que admite el modelo) y 500 genérico
+(`embeddings_failed`) si falla la API de embeddings; el detalle va a los
+logs.
+
+`data/budgets_sample.json` es una lista de presupuestos: hay que envolverla
+en `{"budgets": ...}`. Con la API levantada (en local o con Docker):
+
+```bash
+# bash (requiere jq)
+jq '{budgets: .}' data/budgets_sample.json \
+  | curl -s -X POST http://localhost:8000/embeddings/ingest \
+      -H "Content-Type: application/json" -d @- | jq .stats
+```
+
+```powershell
+# PowerShell
+$body = @{ budgets = (Get-Content data/budgets_sample.json -Raw -Encoding utf8 | ConvertFrom-Json) } | ConvertTo-Json -Depth 10
+(Invoke-RestMethod -Method Post -Uri http://localhost:8000/embeddings/ingest `
+  -ContentType "application/json; charset=utf-8" `
+  -Body ([Text.Encoding]::UTF8.GetBytes($body))).stats
+```
+
+También se puede invocar desde Swagger UI (`http://localhost:8000/docs`,
+sección *embeddings*) pegando ese mismo body. Con el sample: 15
+presupuestos, 45 chunks, ~3.700 tokens, ~$0.00007.
+
+### scripts/compare.py (sanity check)
+
+Embebe dos textos con el mismo `OpenAIEmbedder` y calcula su similitud
+coseno a mano (biblioteca estándar, sin numpy). Se ejecuta desde la raíz
+del proyecto:
+
+```bash
+# Fuera del contenedor (lee el .env de la raíz)
+uv run python scripts/compare.py \
+  --text-a "OAuth 2.0 authentication backend for fintech" \
+  --text-b "JWT-based authorization service for banking app"
+
+# Dentro del contenedor (el servicio se llama "api"; recibe el .env vía env_file)
+docker compose exec api python scripts/compare.py \
+  --text-a "OAuth 2.0 authentication backend for fintech" \
+  --text-b "JWT-based authorization service for banking app"
+```
+
+Los resultados de las tres parejas de validación están en
+`app/embedding_pipeline/SANITY_CHECK.md`.
 
 ## Wrapper de proveedores LLM (LiteLLM)
 

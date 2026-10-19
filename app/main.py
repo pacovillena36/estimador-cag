@@ -19,6 +19,7 @@ from app.logging_config import configure_logging
 from app.prompts.loader import PromptVersionNotFoundError, validate_estimation_prompt_version
 from app.routers import estimations, sessions
 from app.attachments import AttachmentError
+from app.embedding_pipeline import router as embedding_pipeline
 from app.embeddings import EmbeddingError, get_embedder
 from app.schemas import ErrorDetail, ErrorResponse
 from app.semantic_cache.factory import get_semantic_cache
@@ -170,6 +171,7 @@ app = FastAPI(
 app.add_middleware(RequestContextMiddleware)
 app.include_router(estimations.router, prefix="/api/v1")
 app.include_router(sessions.router, prefix="/api/v1")
+app.include_router(embedding_pipeline.router, prefix="/embeddings")
 
 
 # ------------------------------------------------------------------ errores
@@ -268,6 +270,12 @@ async def _sessions_exhausted(_: Request, __: SessionCapacityError) -> JSONRespo
         "El servicio no admite más conversaciones en este momento. Inténtalo más tarde.",
         headers={"Retry-After": "60"},
     )
+
+
+@app.exception_handler(embedding_pipeline.EmbeddingIngestError)
+async def _embedding_ingest_failed(_: Request, exc: embedding_pipeline.EmbeddingIngestError) -> JSONResponse:
+    log.error("embeddings.ingest_failed", error_type=str(exc), exc_info=exc.__cause__)
+    return _error(500, "embeddings_failed", "No se han podido generar los embeddings. Inténtalo de nuevo más tarde.")
 
 
 @app.exception_handler(Exception)
