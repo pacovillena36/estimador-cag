@@ -25,6 +25,7 @@ from app.guardrails.pipeline import InputPipeline, OutputPipeline
 from app.ports.llm import StructuredLLM
 from app.services.estimation_service import get_input_pipeline, get_output_pipeline
 from app.services.ingestion import IngestionService
+from app.services.search import SearchService
 from app.services.llm_gateway import get_llm_gateway
 from app.services.session_estimation import SessionEstimationService
 from app.sessions import SessionStore
@@ -126,3 +127,9 @@ def get_ingestion_service(
 ) -> IngestionService:
     return IngestionService(session, chunker, embedder, max_chunks=settings.ingest_max_chunks)
 
+
+def get_search_service(
+    session: AsyncSession = Depends(get_session),
+    embedder: PipelineEmbedder = Depends(get_pipeline_embedder),
+) -> SearchService:
+    return SearchService(session, embedder)

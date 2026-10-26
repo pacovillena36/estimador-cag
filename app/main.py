@@ -19,7 +19,7 @@ from app.guardrails.base import InputRejectedError, ModerationUnavailableError
 from app.guardrails.moderation import get_moderation_client
 from app.logging_config import configure_logging
 from app.prompts.loader import PromptVersionNotFoundError, validate_estimation_prompt_version
-from app.routers import estimations, ingest, sessions
+from app.routers import estimations, ingest, search, sessions
 from app.attachments import AttachmentError
 from app.dependencies import PayloadTooLargeError
 from app.embedding_pipeline.embedder import EmbeddingProviderError
@@ -189,6 +189,7 @@ app.add_middleware(RequestContextMiddleware)
 app.include_router(estimations.router, prefix="/api/v1")
 app.include_router(sessions.router, prefix="/api/v1")
 app.include_router(ingest.router, prefix="/embeddings")
+app.include_router(search.router)
 
 
 # ------------------------------------------------------------------ errores
