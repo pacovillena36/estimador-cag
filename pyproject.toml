@@ -42,6 +42,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
 markers = [
-    "integration: tests contra servicios reales en contenedores (Redis Stack vía testcontainers); se saltan sin Docker",
+    "integration: tests contra servicios reales en contenedores (Redis Stack vía testcontainers, Postgres de docker-compose); se saltan sin ellos",
 ]
