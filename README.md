@@ -37,12 +37,16 @@ estimador-cag/
 │   │   ├── noop.py               # Caché nulo (modo off)
 │   │   └── factory.py            # get_semantic_cache() según la configuración
 │   ├── embeddings.py             # Cliente de embeddings (OpenAI) con timeout
-│   ├── embedding_pipeline/       # Sesión 07: presupuestos JSON -> chunks -> embeddings
-│   │   ├── schemas.py            # Budget, Chunk, EmbeddedChunk, IngestRequest/Response
+│   ├── embedding_pipeline/       # Sesiones 07-08: presupuesto JSON -> chunks -> embeddings
+│   │   ├── schemas.py            # Budget, Chunk, IngestRequest/Response, cuerpo del 409
 │   │   ├── chunker.py            # JSONStructuralChunker (un componente = un chunk)
-│   │   ├── embedder.py           # OpenAIEmbedder (text-embedding-3-small, batches, reintentos)
-│   │   ├── router.py             # POST /embeddings/ingest
-│   │   └── SANITY_CHECK.md       # Similitud de las tres parejas de validación
+│   │   ├── embedder.py           # OpenAIEmbedder async (text-embedding-3-small, en lote)
+│   │   └── SANITY_CHECK.md       # Similitud de las tres parejas de validación (Sesión 07)
+│   ├── db/                       # Sesión 08: PostgreSQL + pgvector
+│   │   ├── models.py             # Document y Chunk (atributo meta -> columna metadata)
+│   │   └── session.py            # Engine (lifespan) y AsyncSession por request
+│   ├── repositories/             # documents.py y chunks.py (ORM, consultas parametrizadas)
+│   ├── search_schemas.py         # Contrato de POST /search
 │   ├── request_context.py        # RequestContext (tenant) fuera del body
 │   ├── sessions.py               # Agregado Session y SessionStore (memoria del proceso)
 │   ├── session_schemas.py        # Contrato HTTP de sesiones (SessionState de depuración)
@@ -70,12 +74,16 @@ estimador-cag/
 │   │   ├── summary/v1/           # Summarizer acumulativo
 │   │   └── review/v1/            # Critic y boss (Actor-Critic-Boss)
 │   ├── routers/
-│   │   └── estimations.py        # POST /api/v1/estimate (delgado: delega en el servicio)
+│   │   ├── estimations.py        # POST /api/v1/estimate (delgado: delega en el servicio)
+│   │   ├── ingest.py             # POST /embeddings/ingest
+│   │   └── search.py             # POST /search
 │   └── services/
 │       ├── estimation_service.py # Orquesta guardrails, prompt y LLM
 │       ├── llm_gateway.py        # Wrapper de proveedores (LiteLLM + Instructor): tiers, fallback, caché, uso
 │       ├── llm_pricing.py        # MODEL_COSTS: precio por millón de tokens de cada modelo
 │       ├── session_estimation.py # Orquesta un turno de sesión (guardrails, tier, motor, memoria)
+│       ├── ingestion.py          # Ingesta atómica: chunker + embedder + repositorio
+│       ├── search.py             # Embedding de la query + top-k por distancia coseno
 │       └── cache.py              # Caché exact-match en memoria (TTL + LRU)
 ├── evals/
 │   ├── golden_dataset.json       # 16 casos golden
@@ -84,14 +92,19 @@ estimador-cag/
 │   └── run.py                    # CLI: uv run python -m evals.run --mode actor|acb
 ├── data/
 │   └── budgets_sample.json       # 15 presupuestos normalizados (finance, ecommerce, healthcare, industrial)
+├── alembic/                      # Migraciones (plantilla async); versions/0001_initial_schema.py
+├── alembic.ini                   # sqlalchemy.url vacío: la URL viene de DATABASE_URL
 ├── scripts/
-│   └── compare.py                # CLI: similitud coseno entre los embeddings de dos textos
+│   └── ingest_corpus.py          # Ingesta idempotente del corpus vía POST /embeddings/ingest
+├── query_examples.py             # 5 consultas de ejemplo contra POST /search
+├── output_examples.txt           # Salida real de query_examples.py
 ├── tests/
 │   ├── conversation/             # Dominio y casos de uso del núcleo conversacional
 │   ├── evals/                    # Dataset, métricas y runner (sin LLM)
 │   ├── guardrails/               # Normalización, injection, PII, moderación, pipeline
 │   ├── semantic_cache/           # Bucket, servicio con dobles, adaptadores e integración (Redis Stack)
 │   ├── sessions/                 # Sesiones: modelo, API, adjuntos, metadata y turnos con LLM falso
+│   ├── pgvector/                 # Contratos de ingesta/búsqueda e integración con Postgres
 │   ├── prompts/
 │   │   ├── test_estimation_v1.py # Tests de los templates (sin llamar a ningún modelo)
 │   │   └── test_estimation_v2.py
@@ -102,7 +115,7 @@ estimador-cag/
 │   └── test_schemas.py           # Contrato EstimationResult y sus validadores
 ├── .env.example
 ├── Dockerfile                     # Imagen única (Python 3.12 + uv) para API y cliente
-├── docker-compose.yml             # Servicios "api" (uvicorn) y "chat" (Streamlit)
+├── docker-compose.yml             # Servicios "api" (uvicorn), "chat" (Streamlit), "redis" y "postgres"
 ├── ejemplo_peticion.json          # Petición de ejemplo para probar el endpoint
 ├── pyproject.toml
 ├── streamlit_app.py               # Cliente Streamlit (conversación con sesiones), cliente HTTP de la API
@@ -679,12 +692,10 @@ comparar `actor` con `acb` dice si la revisión compensa su coste.
 ## Sesión 07: pipeline de embeddings de presupuestos
 
 Primer paso hacia la búsqueda semántica: los presupuestos históricos
-normalizados (JSON) se trocean y se convierten en vectores. Todavía no se
-persisten (pgvector llega en la Sesión 08): el endpoint los devuelve por
-HTTP.
+normalizados (JSON) se trocean y se convierten en vectores.
 
 ```
-budgets JSON -> JSONStructuralChunker -> OpenAIEmbedder -> IngestResponse
+budget JSON -> JSONStructuralChunker -> OpenAIEmbedder -> Postgres + pgvector
                 (1 componente = 1 chunk)  (text-embedding-3-small, 1536 dims)
 ```
 
@@ -698,67 +709,78 @@ budgets JSON -> JSONStructuralChunker -> OpenAIEmbedder -> IngestResponse
   `metadata` y no se embeben. `chunk_id` = `{budget_id}::{component_id}` y
   `token_count` se cuenta con tiktoken (un chunk de más de 1000 tokens se
   señala en los logs con `embeddings.large_chunk`).
-- **Embedder** (`app/embedding_pipeline/embedder.py`): batches de hasta 100
-  chunks por llamada, reintento ante `RateLimitError` (esperas de 1, 2 y 4
-  s) y el resto de errores se propagan. Cada batch se registra con
+- **Embedder** (`app/embedding_pipeline/embedder.py`): async; todos los
+  chunks de un documento en una llamada (sub-lotes de hasta 2048 entradas o
+  300k tokens), timeout y reintentos acotados del SDK
+  (`PIPELINE_EMBEDDING_TIMEOUT_S`, `PIPELINE_EMBEDDING_MAX_RETRIES`) y
+  comprobación del número y la dimensión de los vectores. Cada lote se registra con
   `embeddings.batch_embedded` (chunks, tokens, latencia). El coste estimado
   usa `PRICE_USD_PER_MILLION_TOKENS` ($0.02 por millón de tokens; revisar
   cuando cambie el precio). Usa `EMBEDDING_API_KEY` u, en su defecto,
   `OPENAI_API_KEY`.
 
-### POST /embeddings/ingest
+En la Sesión 08 el endpoint pasa a persistir en pgvector (contrato nuevo en
+la sección siguiente) y `scripts/compare.py` se sustituye por
+`query_examples.py`; los resultados del sanity check de esta sesión siguen
+en `app/embedding_pipeline/SANITY_CHECK.md`.
 
-Body: `{"budgets": [ ... ]}` (esquema en `app/embedding_pipeline/schemas.py`;
-`sector` admite `finance`, `ecommerce`, `healthcare` e `industrial`).
-Respuesta: `chunks` (cada uno con `chunk_id`, `text`, `metadata`,
-`token_count` y `embedding`) y `stats` (`total_budgets`, `total_chunks`,
-`total_tokens`, `estimated_cost_usd`). Códigos: 200, 422 (validación, o un
-componente que supera los 8191 tokens que admite el modelo) y 500 genérico
-(`embeddings_failed`) si falla la API de embeddings; el detalle va a los
-logs.
+## Persistencia vectorial con pgvector
 
-`data/budgets_sample.json` es una lista de presupuestos: hay que envolverla
-en `{"budgets": ...}`. Con la API levantada (en local o con Docker):
+`POST /embeddings/ingest` guarda cada presupuesto (documento) y sus chunks
+con su embedding en PostgreSQL 16 + pgvector, y `POST /search` devuelve los
+k chunks más cercanos a una consulta por distancia coseno.
 
-```bash
-# bash (requiere jq)
-jq '{budgets: .}' data/budgets_sample.json \
-  | curl -s -X POST http://localhost:8000/embeddings/ingest \
-      -H "Content-Type: application/json" -d @- | jq .stats
-```
-
-```powershell
-# PowerShell
-$body = @{ budgets = (Get-Content data/budgets_sample.json -Raw -Encoding utf8 | ConvertFrom-Json) } | ConvertTo-Json -Depth 10
-(Invoke-RestMethod -Method Post -Uri http://localhost:8000/embeddings/ingest `
-  -ContentType "application/json; charset=utf-8" `
-  -Body ([Text.Encoding]::UTF8.GetBytes($body))).stats
-```
-
-También se puede invocar desde Swagger UI (`http://localhost:8000/docs`,
-sección *embeddings*) pegando ese mismo body. Con el sample: 15
-presupuestos, 45 chunks, ~3.700 tokens, ~$0.00007.
-
-### scripts/compare.py (sanity check)
-
-Embebe dos textos con el mismo `OpenAIEmbedder` y calcula su similitud
-coseno a mano (biblioteca estándar, sin numpy). Se ejecuta desde la raíz
-del proyecto:
+**Cómo levantarlo**
 
 ```bash
-# Fuera del contenedor (lee el .env de la raíz)
-uv run python scripts/compare.py \
-  --text-a "OAuth 2.0 authentication backend for fintech" \
-  --text-b "JWT-based authorization service for banking app"
-
-# Dentro del contenedor (el servicio se llama "api"; recibe el .env vía env_file)
-docker compose exec api python scripts/compare.py \
-  --text-a "OAuth 2.0 authentication backend for fintech" \
-  --text-b "JWT-based authorization service for banking app"
+cp .env.example .env                 # y rellenar las API keys
+docker compose up -d                 # postgres (healthy) -> api
+docker compose run --rm api alembic upgrade head
+docker compose run --rm api python scripts/ingest_corpus.py   # idempotente (409 = ya ingestado)
+docker compose run --rm api python query_examples.py          # > output_examples.txt
 ```
 
-Los resultados de las tres parejas de validación están en
-`app/embedding_pipeline/SANITY_CHECK.md`.
+Las credenciales `estimator/estimator` de `.env.example` son **solo para
+desarrollo local**; Postgres se publica únicamente en `127.0.0.1:5432`.
+Contratos: ingesta `{source_path, document_type, content}` -> `{document_id,
+chunks_created, embedding_dimension, ingestion_time_ms}`, 409 `{"detail":
+"Document already ingested", "document_id": N}`, 502 si falla el proveedor de
+embeddings; búsqueda `{query, k}` (1 <= k <= `SEARCH_MAX_K`) -> `{query, k,
+search_time_ms, results: [{chunk_id, document_id, chunk_type, content,
+distance, metadata}]}`. `source_path` es un identificador opaco: el servicio
+nunca lee ese path del disco. Tests de integración: `TEST_DATABASE_URL` (BD
+separada `estimator_test`, se crea y migra sola; sin Postgres se saltan).
+
+**Decisiones de diseño**
+
+- **(a) Dos tablas y no una.** Un presupuesto genera N chunks: una sola tabla
+  repetiría la metadata del documento en cada fila y perdería la integridad
+  referencial. Con FK + `ON DELETE CASCADE`, borrar un presupuesto elimina
+  sus chunks.
+- **(b) Metadata en JSONB y no en columnas.** Lo estable y consultado siempre
+  (tipo de documento, tipo de chunk, fechas) va en columnas tipadas; lo
+  variable que el chunker puede enriquecer (sector, tecnología, complejidad,
+  horas...) va en JSONB con índice GIN, para consultar claves arbitrarias sin
+  migrar el esquema.
+- **(c) `cosine_distance` y no L2 ni inner product.** Los embeddings de OpenAI
+  vienen normalizados, así que coseno e inner product ordenan igual. Se elige
+  coseno por ser la convención en RAG y para que, cuando se añada un índice
+  HNSW con `vector_cosine_ops`, operador y operator class coincidan (si no,
+  Postgres ignora el índice y hace seq scan sin avisar).
+- **(d) Sin índice vectorial todavía.** El sequential scan (`EXPLAIN`: `Seq
+  Scan on chunks` -> `Sort` -> `Limit`) es el baseline para medir después el
+  impacto del índice; con 15 documentos y 52 chunks la latencia es aceptable
+  (~170-190 ms por búsqueda, casi todo el embedding de la query).
+
+**Notas de implementación.** `metadata` es un atributo reservado de la base
+declarativa de SQLAlchemy: el atributo ORM es `meta`, mapeado a la columna
+`metadata`, y la API lo expone como `"metadata"`. `ix_documents_source_path`
+es **único**: el check previo de la app solo da un 409 rápido, y la
+restricción en BD resuelve la carrera de dos ingestas simultáneas
+(`IntegrityError` -> 409). Los embeddings se calculan **antes** de abrir la
+transacción de escritura: la transacción es corta, no retiene una conexión
+del pool durante la llamada a OpenAI y, si el embedder falla, no se escribe
+nada (sin `documents` huérfanos).
 
 ## Wrapper de proveedores LLM (LiteLLM)
 
