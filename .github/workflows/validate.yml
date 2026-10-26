@@ -60,6 +60,9 @@ jobs:
 
       - name: Run tests
         # Los tests simulan los proveedores: no necesitan API keys reales.
+        # Sin Postgres en CI: los tests de integración de pgvector se saltan.
+        env:
+          DATABASE_URL: postgresql+asyncpg://ci:ci@127.0.0.1:5432/ci
         run: uv run pytest -q
 
       - name: Start server and check /health
@@ -74,6 +77,9 @@ jobs:
           # Sin Redis en CI: el caché semántico en shadow/active exige
           # REDIS_URL y clave de embeddings al arrancar.
           SEMANTIC_CACHE_MODE: "off"
+          # Obligatoria al arrancar; el engine no conecta hasta la primera
+          # consulta, así que /health no necesita Postgres.
+          DATABASE_URL: postgresql+asyncpg://ci:ci@127.0.0.1:5432/ci
         run: |
           uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 &
           SERVER_PID=$!

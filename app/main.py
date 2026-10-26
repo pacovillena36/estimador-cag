@@ -13,6 +13,8 @@ from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.config import settings
+from app.db.models import EMBEDDING_DIM
+from app.db.session import create_engine, create_sessionmaker
 from app.guardrails.base import InputRejectedError, ModerationUnavailableError
 from app.guardrails.moderation import get_moderation_client
 from app.logging_config import configure_logging
@@ -104,7 +106,7 @@ class UTF8JSONResponse(JSONResponse):
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(app: FastAPI):
     # Fail fast: la API no arranca si no hay ningún proveedor con API key,
     # si falta la clave de la Moderation API o si la versión de prompt
     # configurada no existe. Los valores de Settings (tipos, rangos, modos
@@ -113,6 +115,11 @@ async def lifespan(_: FastAPI):
     get_moderation_client()
     validate_estimation_prompt_version(settings.prompt_version)
     validate_estimation_prompt_version(settings.session_prompt_version)
+    if settings.embedding_dim != EMBEDDING_DIM:
+        raise RuntimeError(
+            f"EMBEDDING_DIM={settings.embedding_dim} no coincide con la columna "
+            f"chunks.embedding (Vector({EMBEDDING_DIM})); hace falta una migración."
+        )
     # Caché semántico: configuración obligatoria si el modo no es off
     # (fail fast), pero Redis caído no impide arrancar (fail-open): el
     # índice se crea aquí si existe Redis y, si no, en la primera petición.
@@ -150,7 +157,14 @@ async def lifespan(_: FastAPI):
         semantic_cache_mode=settings.semantic_cache_mode.value,
         semantic_cache_ready=cache_ready,
     )
-    yield
+    # Engine único por proceso; el esquema lo gestiona Alembic, no la app.
+    engine = create_engine(settings)
+    app.state.db_engine = engine
+    app.state.db_sessionmaker = create_sessionmaker(engine)
+    try:
+        yield
+    finally:
+        await engine.dispose()
 
 
 app = FastAPI(
