@@ -1,7 +1,7 @@
-"""Pipeline de embeddings de presupuestos históricos (Sesión 07).
+"""Pipeline de embeddings de presupuestos históricos (Sesiones 07 y 08).
 
-presupuestos JSON -> JSONStructuralChunker (un componente = un chunk)
--> OpenAIEmbedder (text-embedding-3-small, en batches) -> vectores en
-memoria devueltos por POST /embeddings/ingest. Todavía sin persistencia
-(pgvector entra en la Sesión 08) ni retrieval.
+presupuesto JSON -> JSONStructuralChunker (un componente = un chunk)
+-> OpenAIEmbedder (text-embedding-3-small, async, en lote) -> Postgres +
+pgvector (POST /embeddings/ingest) y búsqueda por distancia coseno
+(POST /search).
 """

@@ -21,6 +21,7 @@ def _settings(**overrides) -> Settings:
         "openai_api_key": "sk-o",
         "anthropic_api_key": "sk-a",
         "llm_provider": "anthropic",
+        "database_url": "postgresql+asyncpg://test:test@localhost:5432/test",
     }
     return Settings(**(base | overrides))
 

@@ -13,18 +13,23 @@ from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.config import settings
+from app.db.models import EMBEDDING_DIM
+from app.db.session import create_engine, create_sessionmaker
 from app.guardrails.base import InputRejectedError, ModerationUnavailableError
 from app.guardrails.moderation import get_moderation_client
 from app.logging_config import configure_logging
 from app.prompts.loader import PromptVersionNotFoundError, validate_estimation_prompt_version
-from app.routers import estimations, sessions
+from app.routers import estimations, ingest, search, sessions
 from app.attachments import AttachmentError
-from app.embedding_pipeline import router as embedding_pipeline
+from app.dependencies import PayloadTooLargeError
+from app.embedding_pipeline.embedder import EmbeddingProviderError
+from app.embedding_pipeline.schemas import DocumentConflictResponse
 from app.embeddings import EmbeddingError, get_embedder
 from app.schemas import ErrorDetail, ErrorResponse
 from app.semantic_cache.factory import get_semantic_cache
 from app.semantic_cache.ports import CacheUnavailableError
 from app.sessions import SessionCapacityError, SessionNotFoundError
+from app.services.ingestion import DocumentAlreadyIngestedError
 from app.services.llm_gateway import (
     AllProvidersFailedError,
     InvalidStructuredOutputError,
@@ -104,7 +109,7 @@ class UTF8JSONResponse(JSONResponse):
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(app: FastAPI):
     # Fail fast: la API no arranca si no hay ningún proveedor con API key,
     # si falta la clave de la Moderation API o si la versión de prompt
     # configurada no existe. Los valores de Settings (tipos, rangos, modos
@@ -113,6 +118,11 @@ async def lifespan(_: FastAPI):
     get_moderation_client()
     validate_estimation_prompt_version(settings.prompt_version)
     validate_estimation_prompt_version(settings.session_prompt_version)
+    if settings.embedding_dim != EMBEDDING_DIM:
+        raise RuntimeError(
+            f"EMBEDDING_DIM={settings.embedding_dim} no coincide con la columna "
+            f"chunks.embedding (Vector({EMBEDDING_DIM})); hace falta una migración."
+        )
     # Caché semántico: configuración obligatoria si el modo no es off
     # (fail fast), pero Redis caído no impide arrancar (fail-open): el
     # índice se crea aquí si existe Redis y, si no, en la primera petición.
@@ -150,7 +160,14 @@ async def lifespan(_: FastAPI):
         semantic_cache_mode=settings.semantic_cache_mode.value,
         semantic_cache_ready=cache_ready,
     )
-    yield
+    # Engine único por proceso; el esquema lo gestiona Alembic, no la app.
+    engine = create_engine(settings)
+    app.state.db_engine = engine
+    app.state.db_sessionmaker = create_sessionmaker(engine)
+    try:
+        yield
+    finally:
+        await engine.dispose()
 
 
 app = FastAPI(
@@ -171,7 +188,8 @@ app = FastAPI(
 app.add_middleware(RequestContextMiddleware)
 app.include_router(estimations.router, prefix="/api/v1")
 app.include_router(sessions.router, prefix="/api/v1")
-app.include_router(embedding_pipeline.router, prefix="/embeddings")
+app.include_router(ingest.router, prefix="/embeddings")
+app.include_router(search.router)
 
 
 # ------------------------------------------------------------------ errores
@@ -272,10 +290,26 @@ async def _sessions_exhausted(_: Request, __: SessionCapacityError) -> JSONRespo
     )
 
 
-@app.exception_handler(embedding_pipeline.EmbeddingIngestError)
-async def _embedding_ingest_failed(_: Request, exc: embedding_pipeline.EmbeddingIngestError) -> JSONResponse:
-    log.error("embeddings.ingest_failed", error_type=str(exc), exc_info=exc.__cause__)
-    return _error(500, "embeddings_failed", "No se han podido generar los embeddings. Inténtalo de nuevo más tarde.")
+@app.exception_handler(EmbeddingProviderError)
+async def _embedding_provider_failed(_: Request, exc: EmbeddingProviderError) -> JSONResponse:
+    # Ingesta: no se ha persistido nada (los embeddings van antes de la
+    # transacción de escritura). El tipo de error de la API solo va al log.
+    log.error("embeddings.provider_failed", error_type=str(exc), exc_info=exc.__cause__)
+    return _error(502, "embedding_provider_error", "Embedding provider error")
+
+
+@app.exception_handler(DocumentAlreadyIngestedError)
+async def _document_already_ingested(_: Request, exc: DocumentAlreadyIngestedError) -> JSONResponse:
+    # Contrato del 409: {"detail": ..., "document_id": ...} a nivel raíz
+    # (HTTPException lo anidaría en "detail").
+    log.info("embeddings.document_conflict", document_id=exc.document_id)
+    body = DocumentConflictResponse(document_id=exc.document_id)
+    return UTF8JSONResponse(status_code=409, content=body.model_dump())
+
+
+@app.exception_handler(PayloadTooLargeError)
+async def _payload_too_large(_: Request, exc: PayloadTooLargeError) -> JSONResponse:
+    return _error(413, "payload_too_large", f"El body supera el máximo de {exc.max_bytes} bytes.")
 
 
 @app.exception_handler(Exception)

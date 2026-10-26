@@ -111,6 +111,23 @@ class Settings(BaseSettings):
     embedding_dimensions: int = Field(1536, ge=64, le=3072)
     embedding_timeout_ms: int = Field(1000, ge=100, le=10_000)
 
+    # --- Persistencia vectorial (PostgreSQL + pgvector) --------------------
+    # Obligatoria y sin default: postgresql+asyncpg://USER:PASS@HOST:5432/DB.
+    # SecretStr porque lleva la contraseña (nunca en logs ni respuestas).
+    database_url: SecretStr
+    # Dimensión de la columna chunks.embedding (Vector(1536)) y de los
+    # vectores del pipeline; cambiarla exige una migración.
+    embedding_dim: int = Field(1536, ge=64, le=3072)
+    # Embedder del pipeline (lotes fuera del camino crítico): timeout amplio
+    # y pocos reintentos del SDK.
+    pipeline_embedding_timeout_s: float = Field(30.0, gt=0, le=300)
+    pipeline_embedding_max_retries: int = Field(2, ge=0, le=5)
+    # Límites de POST /search y POST /embeddings/ingest.
+    search_max_k: int = Field(50, ge=1, le=1000)
+    search_query_max_length: int = Field(2000, ge=1, le=20_000)
+    ingest_max_chunks: int = Field(2000, ge=1, le=100_000)
+    ingest_max_body_bytes: int = Field(2 * 1024 * 1024, ge=1024, le=50 * 1024 * 1024)
+
     # --- Sesiones conversacionales (POST /sessions/{id}/estimate) ----------
     # Versión del prompt de las sesiones (v5 = v4 + <conversation_summary> y
     # <anchors>). /estimate sigue con PROMPT_VERSION.

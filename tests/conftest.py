@@ -186,7 +186,12 @@ def fake_moderation() -> FakeModeration:
 
 def make_settings(**overrides) -> Settings:
     """Settings herméticos: ignoran el .env local del desarrollador."""
-    base = {"_env_file": None, "openai_api_key": "sk-test-o", "semantic_cache_mode": "off"}
+    base = {
+        "_env_file": None,
+        "openai_api_key": "sk-test-o",
+        "semantic_cache_mode": "off",
+        "database_url": "postgresql+asyncpg://test:test@localhost:5432/test",
+    }
     return Settings(**(base | overrides))
 
 
