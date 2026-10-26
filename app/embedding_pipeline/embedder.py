@@ -1,70 +1,87 @@
-"""Embedder del pipeline: text-embedding-3-small de OpenAI, en batches.
+"""Embedder del pipeline: text-embedding-3-small de OpenAI, async y en lotes.
 
 A diferencia del embedder del caché semántico (app/embeddings.py, una
 llamada por petición con timeout corto y sin reintentos), aquí se embeben
-lotes de chunks fuera del camino crítico: timeout amplio, batches de hasta
-BATCH_SIZE entradas y reintento con espera exponencial ante RateLimitError.
-El resto de errores de la API se propagan.
+todos los chunks de un documento en una sola llamada (sub-lotes solo si se
+superan los límites de la API) con timeout amplio y reintentos acotados del
+SDK (429, 5xx, timeouts). Se usa la dimensión por defecto del modelo: no se
+pide `dimensions`, pero se comprueba la de cada vector devuelto.
 
-Se usa la dimensión por defecto del modelo (1536): no se pide `dimensions`.
+Cualquier fallo (red, API, respuesta incoherente) sale como
+EmbeddingProviderError; la ingesta y la búsqueda lo traducen a 502.
 """
 
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from functools import lru_cache
+from typing import Protocol
 
 import openai
 import structlog
 from pydantic import SecretStr
 
 from app.config import get_settings
-from app.embedding_pipeline.schemas import Chunk, EmbeddedChunk
+from app.embedding_pipeline.schemas import Chunk
 
 log = structlog.get_logger(__name__)
-
-EMBEDDING_MODEL = "text-embedding-3-small"
 
 # Precio de text-embedding-3-small en USD por millón de tokens de entrada
 # (octubre de 2026). Cambia con el tiempo: revisar en la página de precios
 # de OpenAI.
 PRICE_USD_PER_MILLION_TOKENS = 0.02
 
-# Límites de la API: máximo de tokens por entrada y total por petición.
+# Límites de la API: tokens por entrada, entradas y tokens por petición.
 MAX_INPUT_TOKENS = 8191
+MAX_INPUTS_PER_REQUEST = 2048
 MAX_TOKENS_PER_REQUEST = 300_000
-
-BATCH_SIZE = 100
-RATE_LIMIT_BACKOFF_SECONDS = (1, 2, 4)
-TIMEOUT_SECONDS = 30.0
 
 
 class EmbeddingsNotConfiguredError(RuntimeError):
     """No hay EMBEDDING_API_KEY ni OPENAI_API_KEY."""
 
 
+class EmbeddingProviderError(Exception):
+    """La API de embeddings falló o devolvió una respuesta incoherente."""
+
+
 def estimate_cost_usd(tokens: int) -> float:
     return tokens * PRICE_USD_PER_MILLION_TOKENS / 1_000_000
 
 
+class PipelineEmbedder(Protocol):
+    async def embed_chunks(self, chunks: Sequence[Chunk]) -> list[list[float]]: ...
+
+    async def embed_query(self, text: str) -> list[float]: ...
+
+
 class OpenAIEmbedder:
-    def __init__(self, api_key: SecretStr, *, model: str = EMBEDDING_MODEL) -> None:
+    def __init__(
+        self,
+        api_key: SecretStr,
+        *,
+        model: str,
+        dimensions: int,
+        timeout_s: float,
+        max_retries: int,
+    ) -> None:
         self._model = model
-        # max_retries=0: el único reintento es el de RateLimitError de abajo.
-        self._client = openai.OpenAI(
+        self._dimensions = dimensions
+        self._client = openai.AsyncOpenAI(
             api_key=api_key.get_secret_value(),
-            timeout=TIMEOUT_SECONDS,
-            max_retries=0,
+            timeout=timeout_s,
+            max_retries=max_retries,
         )
 
-    def embed_one(self, text: str) -> list[float]:
-        return self._create([text])[0]
+    async def embed_query(self, text: str) -> list[float]:
+        return (await self._create([text]))[0]
 
-    def embed_many(self, chunks: list[Chunk]) -> list[EmbeddedChunk]:
-        embedded = []
-        batches = list(self._batches(chunks))
+    async def embed_chunks(self, chunks: Sequence[Chunk]) -> list[list[float]]:
+        """Un vector por chunk, en el mismo orden."""
+        vectors: list[list[float]] = []
+        batches = list(_batches(chunks))
         for number, batch in enumerate(batches, start=1):
             start = time.perf_counter()
-            vectors = self._create([chunk.text for chunk in batch])
+            vectors.extend(await self._create([chunk.text for chunk in batch]))
             log.info(
                 "embeddings.batch_embedded",
                 batch=number,
@@ -73,43 +90,41 @@ class OpenAIEmbedder:
                 tokens=sum(chunk.token_count for chunk in batch),
                 latency_ms=round((time.perf_counter() - start) * 1000, 1),
             )
-            embedded.extend(
-                EmbeddedChunk(**chunk.model_dump(), embedding=vector)
-                for chunk, vector in zip(batch, vectors, strict=True)
-            )
-        return embedded
+        return vectors
 
-    @staticmethod
-    def _batches(chunks: list[Chunk]):
-        """Lotes de hasta BATCH_SIZE chunks sin pasar de MAX_TOKENS_PER_REQUEST."""
-        batch: list[Chunk] = []
-        tokens = 0
-        for chunk in chunks:
-            if batch and (len(batch) == BATCH_SIZE or tokens + chunk.token_count > MAX_TOKENS_PER_REQUEST):
-                yield batch
-                batch, tokens = [], 0
-            batch.append(chunk)
-            tokens += chunk.token_count
-        if batch:
+    async def _create(self, texts: list[str]) -> list[list[float]]:
+        try:
+            response = await self._client.embeddings.create(model=self._model, input=texts)
+        except openai.OpenAIError as exc:  # timeout, conexión, rate limit, 4xx/5xx
+            raise EmbeddingProviderError(type(exc).__name__) from exc
+        # La API devuelve un índice por entrada: no se asume el orden.
+        vectors = [item.embedding for item in sorted(response.data, key=lambda item: item.index)]
+        if len(vectors) != len(texts):
+            raise EmbeddingProviderError(f"count_mismatch:{len(vectors)}!={len(texts)}")
+        if any(len(vector) != self._dimensions for vector in vectors):
+            raise EmbeddingProviderError("dimension_mismatch")
+        return vectors
+
+
+def _batches(chunks: Sequence[Chunk]) -> Iterator[list[Chunk]]:
+    """Lotes de hasta MAX_INPUTS_PER_REQUEST chunks sin pasar de
+    MAX_TOKENS_PER_REQUEST (un documento normal cabe en uno solo)."""
+    batch: list[Chunk] = []
+    tokens = 0
+    for chunk in chunks:
+        if batch and (
+            len(batch) == MAX_INPUTS_PER_REQUEST or tokens + chunk.token_count > MAX_TOKENS_PER_REQUEST
+        ):
             yield batch
-
-    def _create(self, texts: Sequence[str]) -> list[list[float]]:
-        for attempt, wait in enumerate((*RATE_LIMIT_BACKOFF_SECONDS, None), start=1):
-            try:
-                response = self._client.embeddings.create(model=self._model, input=list(texts))
-            except openai.RateLimitError:
-                if wait is None:
-                    raise
-                log.warning("embeddings.rate_limited", attempt=attempt, retry_in_s=wait)
-                time.sleep(wait)
-                continue
-            # La API devuelve un índice por entrada: se ordena por él.
-            return [item.embedding for item in sorted(response.data, key=lambda item: item.index)]
-        raise AssertionError("unreachable")
+            batch, tokens = [], 0
+        batch.append(chunk)
+        tokens += chunk.token_count
+    if batch:
+        yield batch
 
 
 @lru_cache
-def get_pipeline_embedder() -> OpenAIEmbedder:
+def get_pipeline_embedder() -> PipelineEmbedder:
     """Instancia única, inyectada con Depends (sustituible en tests).
 
     Misma clave que el caché semántico: EMBEDDING_API_KEY (permisos
@@ -121,4 +136,10 @@ def get_pipeline_embedder() -> OpenAIEmbedder:
         raise EmbeddingsNotConfiguredError(
             "El pipeline de embeddings necesita EMBEDDING_API_KEY u OPENAI_API_KEY."
         )
-    return OpenAIEmbedder(api_key)
+    return OpenAIEmbedder(
+        api_key,
+        model=settings.embedding_model,
+        dimensions=settings.embedding_dim,
+        timeout_s=settings.pipeline_embedding_timeout_s,
+        max_retries=settings.pipeline_embedding_max_retries,
+    )

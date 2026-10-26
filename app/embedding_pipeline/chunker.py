@@ -10,7 +10,6 @@ estructura del JSON y los chunks grandes solo se señalan en los logs.
 import structlog
 import tiktoken
 
-from app.embedding_pipeline.embedder import EMBEDDING_MODEL
 from app.embedding_pipeline.schemas import Budget, BudgetComponent, Chunk
 
 log = structlog.get_logger(__name__)
@@ -19,9 +18,13 @@ log = structlog.get_logger(__name__)
 # trocea; es material de análisis).
 LARGE_CHUNK_TOKENS = 1000
 
+# Tipo de los chunks que produce este chunker (columna chunks.chunk_type).
+CHUNK_TYPE = "budget_component"
+
 
 class JSONStructuralChunker:
-    def __init__(self, model: str = EMBEDDING_MODEL) -> None:
+    def __init__(self, model: str) -> None:
+        # Mismo tokenizador que el modelo de embeddings (token_count).
         self._encoding = tiktoken.encoding_for_model(model)
 
     def chunk(self, budgets: list[Budget]) -> list[Chunk]:
