@@ -76,6 +76,7 @@ estimador-cag/
 │   ├── routers/
 │   │   ├── estimations.py        # POST /api/v1/estimate (delgado: delega en el servicio)
 │   │   ├── ingest.py             # POST /embeddings/ingest
+│   │   ├── encode.py             # POST /embeddings/encode
 │   │   └── search.py             # POST /search
 │   └── services/
 │       ├── estimation_service.py # Orquesta guardrails, prompt y LLM
@@ -83,6 +84,7 @@ estimador-cag/
 │       ├── llm_pricing.py        # MODEL_COSTS: precio por millón de tokens de cada modelo
 │       ├── session_estimation.py # Orquesta un turno de sesión (guardrails, tier, motor, memoria)
 │       ├── ingestion.py          # Ingesta atómica: chunker + embedder + repositorio
+│       ├── encoding.py           # Encode de textos a embeddings (sin persistir)
 │       ├── search.py             # Embedding de la query + top-k por distancia coseno
 │       └── cache.py              # Caché exact-match en memoria (TTL + LRU)
 ├── evals/
@@ -115,7 +117,7 @@ estimador-cag/
 │   └── test_schemas.py           # Contrato EstimationResult y sus validadores
 ├── .env.example
 ├── Dockerfile                     # Imagen única (Python 3.12 + uv) para API y cliente
-├── docker-compose.yml             # Servicios "api" (uvicorn), "chat" (Streamlit), "redis" y "postgres"
+├── docker-compose.yml             # "api", "chat", "redis", "postgres" y los one-shot "migrate" y "seed"
 ├── ejemplo_peticion.json          # Petición de ejemplo para probar el endpoint
 ├── pyproject.toml
 ├── streamlit_app.py               # Cliente Streamlit (conversación con sesiones), cliente HTTP de la API
@@ -727,18 +729,29 @@ en `app/embedding_pipeline/SANITY_CHECK.md`.
 ## Persistencia vectorial con pgvector
 
 `POST /embeddings/ingest` guarda cada presupuesto (documento) y sus chunks
-con su embedding en PostgreSQL 16 + pgvector, y `POST /search` devuelve los
-k chunks más cercanos a una consulta por distancia coseno.
+con su embedding en PostgreSQL 16 + pgvector, `POST /search` devuelve los
+k chunks más cercanos a una consulta por distancia coseno y `POST
+/embeddings/encode` devuelve el embedding de uno o varios textos sin
+persistir nada.
 
 **Cómo levantarlo**
 
 ```bash
 cp .env.example .env                 # y rellenar las API keys
-docker compose up -d                 # postgres (healthy) -> api
-docker compose run --rm api alembic upgrade head
-docker compose run --rm api python scripts/ingest_corpus.py   # idempotente (409 = ya ingestado)
+docker compose up -d                 # postgres (healthy) -> migrate -> api (healthy) -> seed
+docker compose logs seed             # "Total: 15 ingestados, ..." (o "ya existentes")
 docker compose run --rm api python query_examples.py          # > output_examples.txt
 ```
+
+El arranque es automático: `migrate` aplica `alembic upgrade head` (la API
+no arranca si falla) y `seed` ingesta el corpus de `data/` en cuanto la API
+está healthy, llamando a `POST /embeddings/ingest`; ambos terminan y quedan
+en `Exited (0)`. El seed pasa por la API y no es un `INSERT` directo porque
+cada componente necesita su embedding: requiere `EMBEDDING_API_KEY` u
+`OPENAI_API_KEY` en la API. Es idempotente (un 409 es "ya ingestado"), así
+que repetir `docker compose up` no duplica nada; para relanzarlo a mano,
+`docker compose run --rm seed`, y para empezar de cero, `docker compose down
+-v` (borra el volumen de Postgres).
 
 Las credenciales `estimator/estimator` de `.env.example` son **solo para
 desarrollo local**; Postgres se publica únicamente en `127.0.0.1:5432`.
@@ -747,7 +760,11 @@ chunks_created, embedding_dimension, ingestion_time_ms}`, 409 `{"detail":
 "Document already ingested", "document_id": N}`, 502 si falla el proveedor de
 embeddings; búsqueda `{query, k}` (1 <= k <= `SEARCH_MAX_K`) -> `{query, k,
 search_time_ms, results: [{chunk_id, document_id, chunk_type, content,
-distance, metadata}]}`. `source_path` es un identificador opaco: el servicio
+distance, metadata}]}`; encode `{texts: [...]}` (1 a `ENCODE_MAX_TEXTS`)
+-> `{model, embedding_dimension, embeddings, total_tokens, encode_time_ms}`,
+un vector por texto y en el mismo orden, comparable con los de
+`chunks.embedding` (mismo modelo); un texto de más de 8191 tokens da 422 sin
+llamar a la API. `source_path` es un identificador opaco: el servicio
 nunca lee ese path del disco. Tests de integración: `TEST_DATABASE_URL` (BD
 separada `estimator_test`, se crea y migra sola; sin Postgres se saltan).
 

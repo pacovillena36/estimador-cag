@@ -5,6 +5,10 @@ con una lista de presupuestos se ingesta como un documento por presupuesto
 (source_path = "<fichero>#<budget_id>"); un fichero con un solo
 presupuesto, como un documento. Idempotente: un 409 es "ya ingestado".
 
+`docker compose up` lo ejecuta solo (servicio "seed", con la API healthy);
+para relanzarlo a mano:
+
+    docker compose run --rm seed
     docker compose run --rm api python scripts/ingest_corpus.py [CORPUS_DIR]
 
 INGEST_API_URL fija la URL base (por defecto http://api:8000).

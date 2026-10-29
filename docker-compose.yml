@@ -17,8 +17,44 @@ services:
     depends_on:
       redis:
         condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    # Sin curl en la imagen slim: se comprueba /health con Python. "healthy"
+    # es la señal que espera el servicio "seed".
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  # Migraciones de Alembic antes de arrancar la API. Idempotente: si el
+  # esquema ya está en head, no hace nada. Solo recibe DATABASE_URL (no el
+  # .env entero con las API keys).
+  migrate:
+    build: .
+    command: alembic upgrade head
+    environment:
+      - DATABASE_URL=${DATABASE_URL:?Define DATABASE_URL en .env}
+    depends_on:
       postgres:
         condition: service_healthy
+    restart: "no"
+
+  # Seed: ingesta el corpus de presupuestos históricos (data/*.json) en
+  # cuanto la API está healthy, vía POST /embeddings/ingest (los embeddings
+  # los calcula la API). Idempotente: un presupuesto ya ingestado da 409 y
+  # se salta. No recibe ninguna clave; si falla (p. ej. sin clave de
+  # embeddings en la API) sale con código 1 y la API sigue en marcha.
+  seed:
+    build: .
+    command: python scripts/ingest_corpus.py data
+    environment:
+      - INGEST_API_URL=http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: "no"
 
   # PostgreSQL 16 + pgvector: documentos y chunks con su embedding. Solo
   # recibe sus tres variables (no el .env entero con las API keys) y se
