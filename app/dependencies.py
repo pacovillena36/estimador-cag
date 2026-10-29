@@ -24,6 +24,7 @@ from app.embedding_pipeline.embedder import PipelineEmbedder, get_pipeline_embed
 from app.guardrails.pipeline import InputPipeline, OutputPipeline
 from app.ports.llm import StructuredLLM
 from app.services.estimation_service import get_input_pipeline, get_output_pipeline
+from app.services.encoding import EncodingService
 from app.services.ingestion import IngestionService
 from app.services.search import SearchService
 from app.services.llm_gateway import get_llm_gateway
@@ -126,6 +127,13 @@ def get_ingestion_service(
     settings: Settings = Depends(get_settings),
 ) -> IngestionService:
     return IngestionService(session, chunker, embedder, max_chunks=settings.ingest_max_chunks)
+
+
+def get_encoding_service(
+    embedder: PipelineEmbedder = Depends(get_pipeline_embedder),
+    settings: Settings = Depends(get_settings),
+) -> EncodingService:
+    return EncodingService(embedder, model=settings.embedding_model)
 
 
 def get_search_service(

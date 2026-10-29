@@ -6,9 +6,13 @@ se restringen a un alfabeto seguro porque forman el chunk_id
 ("{budget_id}::{component_id}") y viajan a los logs.
 """
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, StringConstraints, model_validator
+
+from app.config import get_settings
+
+_settings = get_settings()
 
 # Universo cerrado de valores del dataset normalizado: un valor nuevo debe
 # entrar aquí a propósito, no colarse como texto libre en los filtros.
@@ -86,3 +90,24 @@ class DocumentConflictResponse(BaseModel):
 
     detail: str = "Document already ingested"
     document_id: int
+
+
+# --- POST /embeddings/encode -------------------------------------------------
+
+# Se recorta antes de validar: un texto de solo espacios es vacío. El límite
+# de tokens por texto (MAX_INPUT_TOKENS) lo comprueba el servicio con
+# tiktoken; el tamaño total del body, limit_ingest_body_size.
+EncodeText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class EncodeRequest(BaseModel):
+    texts: list[EncodeText] = Field(min_length=1, max_length=_settings.encode_max_texts)
+
+
+class EncodeResponse(BaseModel):
+    model: str
+    embedding_dimension: int
+    # Un vector por texto, en el mismo orden que `texts`.
+    embeddings: list[list[float]]
+    total_tokens: int
+    encode_time_ms: int

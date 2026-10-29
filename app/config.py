@@ -127,6 +127,9 @@ class Settings(BaseSettings):
     search_query_max_length: int = Field(2000, ge=1, le=20_000)
     ingest_max_chunks: int = Field(2000, ge=1, le=100_000)
     ingest_max_body_bytes: int = Field(2 * 1024 * 1024, ge=1024, le=50 * 1024 * 1024)
+    # Textos por petición de POST /embeddings/encode (todos en una llamada a
+    # la API): 36 x 8191 tokens no llega a los 300k tokens por petición.
+    encode_max_texts: int = Field(32, ge=1, le=36)
 
     # --- Sesiones conversacionales (POST /sessions/{id}/estimate) ----------
     # Versión del prompt de las sesiones (v5 = v4 + <conversation_summary> y

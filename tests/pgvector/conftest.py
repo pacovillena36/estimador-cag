@@ -57,6 +57,12 @@ class FakePipelineEmbedder:
             raise EmbeddingProviderError("APITimeoutError")
         return fake_vector(text)
 
+    async def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
+        self.calls += 1
+        if self.failing:
+            raise EmbeddingProviderError("APITimeoutError")
+        return [fake_vector(text) for text in texts]
+
 
 @pytest.fixture
 def fake_pipeline_embedder() -> FakePipelineEmbedder:

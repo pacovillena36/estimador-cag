@@ -53,6 +53,8 @@ class PipelineEmbedder(Protocol):
 
     async def embed_query(self, text: str) -> list[float]: ...
 
+    async def embed_texts(self, texts: Sequence[str]) -> list[list[float]]: ...
+
 
 class OpenAIEmbedder:
     def __init__(
@@ -74,6 +76,11 @@ class OpenAIEmbedder:
 
     async def embed_query(self, text: str) -> list[float]:
         return (await self._create([text]))[0]
+
+    async def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
+        """Un vector por texto, en el mismo orden, en una sola llamada (quien
+        llama acota el número de textos y sus tokens a los límites de la API)."""
+        return await self._create(list(texts))
 
     async def embed_chunks(self, chunks: Sequence[Chunk]) -> list[list[float]]:
         """Un vector por chunk, en el mismo orden."""
