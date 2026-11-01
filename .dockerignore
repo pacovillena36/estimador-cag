@@ -6,7 +6,7 @@ __pycache__
 .github
 .env
 uv.lock.bak
-transcripcion_ejemplo.md
+ejemplo_peticion.json
 README.md
 tests
 .pytest_cache

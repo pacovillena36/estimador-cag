@@ -1,0 +1,21 @@
+<conversation_context>
+<project_metadata>
+{{ project_metadata_json }}
+</project_metadata>
+<conversation_summary>
+{{ conversation_summary }}
+</conversation_summary>
+<anchors>
+{% for anchor in anchors %}
+- [{{ anchor.kind }} · turno {{ anchor.turn }}] {{ anchor.text }}
+{% endfor %}
+</anchors>
+</conversation_context>
+
+<conversation_turn>
+{{ user_message }}
+</conversation_turn>
+
+<estimate>
+{{ estimate_json }}
+</estimate>

@@ -2,14 +2,17 @@ import pytest
 from pydantic import SecretStr
 
 from app.config import Settings
+from app.schemas import EstimationResult
 from app.services.cache import TTLCache
 from app.services.llm_gateway import (
     AllProvidersFailedError,
+    InvalidStructuredOutputError,
     LLMGateway,
     NoProvidersConfiguredError,
     ProviderError,
     build_providers,
 )
+from tests.conftest import VALID_RESULT
 
 
 def _settings(**overrides) -> Settings:
@@ -18,6 +21,7 @@ def _settings(**overrides) -> Settings:
         "openai_api_key": "sk-o",
         "anthropic_api_key": "sk-a",
         "llm_provider": "anthropic",
+        "database_url": "postgresql+asyncpg://test:test@localhost:5432/test",
     }
     return Settings(**(base | overrides))
 
@@ -137,3 +141,58 @@ def test_cache_evicts_least_recently_used_and_expires():
     expired = TTLCache[str](ttl_seconds=0, max_entries=2)
     expired.set("a", "1")
     assert expired.get("a") is None
+
+
+# ------------------------------------------------------ salida estructurada
+
+
+def test_complete_structured_returns_a_validated_instance(gateway, fake_completion):
+    result = gateway.complete_structured("system", "transcripción", EstimationResult)
+    assert isinstance(result, EstimationResult)
+    assert result.model_dump() == VALID_RESULT
+
+
+def test_complete_structured_is_cached_separately_from_text(gateway, fake_completion):
+    gateway.complete("system", "transcripción")
+    first = gateway.complete_structured("system", "transcripción", EstimationResult)
+    second = gateway.complete_structured("system", "transcripción", EstimationResult)
+    assert second == first
+    # Una llamada de texto y una estructurada; la segunda estructurada, de caché.
+    assert fake_completion.calls == ["anthropic", "anthropic"]
+
+
+def test_complete_structured_rotates_provider_on_transport_errors(gateway, fake_completion):
+    fake_completion.failing = {"anthropic"}
+    gateway.complete_structured("system", "transcripción", EstimationResult)
+    assert fake_completion.calls == ["anthropic", "openai"]
+
+
+def test_invalid_structured_output_is_not_cached_nor_rotated(gateway, fake_completion, logs):
+    fake_completion.structured = [VALID_RESULT | {"total_hours": 1}]
+    with pytest.raises(InvalidStructuredOutputError):
+        gateway.complete_structured("system", "transcripción", EstimationResult)
+    assert fake_completion.calls == ["anthropic"] * 3
+
+    (failed,) = [fields for _, event, fields in logs if event == "llm.validation_failed"]
+    assert failed["errors"] == ["<root>: value_error"]
+    assert "total_hours" not in repr(failed)  # ni valores ni mensajes del modelo
+
+    fake_completion.structured = [VALID_RESULT]
+    gateway.complete_structured("system", "transcripción", EstimationResult)
+    assert fake_completion.calls == ["anthropic"] * 4
+
+
+def test_validation_context_reaches_validators_and_is_part_of_the_cache_key(gateway, fake_completion):
+    low = VALID_RESULT | {"confidence_pct": 40}
+    fake_completion.structured = [low]
+
+    lenient = gateway.complete_structured(
+        "system", "transcripción", EstimationResult, context={"min_confidence_pct": 30}
+    )
+    assert lenient.confidence_pct == 40
+    with pytest.raises(InvalidStructuredOutputError):
+        gateway.complete_structured(
+            "system", "transcripción", EstimationResult, context={"min_confidence_pct": 50}
+        )
+    # Otro umbral -> otra entrada de caché (1 llamada + 3 intentos).
+    assert fake_completion.calls == ["anthropic"] * 4

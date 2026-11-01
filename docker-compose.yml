@@ -10,6 +10,81 @@ services:
       - "127.0.0.1:8000:8000"
     env_file:
       - .env
+    environment:
+      # Caché semántico: Redis Stack del servicio "redis" (red interna). La
+      # contraseña sale de REDIS_PASSWORD en el .env; nunca en este fichero.
+      - REDIS_URL=redis://default:${REDIS_PASSWORD:?Define REDIS_PASSWORD en .env}@redis:6379/0
+    depends_on:
+      redis:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    # Sin curl en la imagen slim: se comprueba /health con Python. "healthy"
+    # es la señal que espera el servicio "seed".
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  # Migraciones de Alembic antes de arrancar la API. Idempotente: si el
+  # esquema ya está en head, no hace nada. Solo recibe DATABASE_URL (no el
+  # .env entero con las API keys).
+  migrate:
+    build: .
+    command: alembic upgrade head
+    environment:
+      - DATABASE_URL=${DATABASE_URL:?Define DATABASE_URL en .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # Seed: ingesta el corpus de presupuestos históricos (data/*.json) en
+  # cuanto la API está healthy, vía POST /embeddings/ingest (los embeddings
+  # los calcula la API). Idempotente: un presupuesto ya ingestado da 409 y
+  # se salta. No recibe ninguna clave; si falla (p. ej. sin clave de
+  # embeddings en la API) sale con código 1 y la API sigue en marcha.
+  seed:
+    build: .
+    command: python scripts/ingest_corpus.py data
+    environment:
+      - INGEST_API_URL=http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: "no"
+
+  # PostgreSQL 16 + pgvector: documentos y chunks con su embedding. Solo
+  # recibe sus tres variables (no el .env entero con las API keys) y se
+  # publica únicamente en localhost. Credenciales solo para desarrollo.
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Define POSTGRES_DB en .env}
+      POSTGRES_USER: ${POSTGRES_USER:?Define POSTGRES_USER en .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Redis Stack (búsqueda vectorial) para el caché semántico. Sin puertos
+  # publicados: solo es accesible desde la red interna de docker-compose.
+  # Con contraseña (usuario "default"); en entornos no locales usar TLS
+  # (rediss://) y un usuario ACL con permisos solo sobre el índice.
+  redis:
+    image: redis/redis-stack-server:7.4.0-v6
+    environment:
+      - REDIS_ARGS=--requirepass ${REDIS_PASSWORD:?Define REDIS_PASSWORD en .env}
+    volumes:
+      - redis-data:/data
 
   chat:
     build: .
@@ -19,11 +94,14 @@ services:
     ports:
       - "127.0.0.1:8501:8501"
     environment:
-      # El chat ahora es un cliente HTTP puro de la API (ver
+      # El cliente es un cliente HTTP puro de la API (ver
       # streamlit_app.py); "api" es el nombre del servicio en la red
-      # interna de docker-compose, no localhost.
+      # interna de docker-compose, no localhost. No recibe el .env: las
+      # API keys de los proveedores solo existen en el contenedor "api".
       - API_BASE_URL=http://api:8000
-    env_file:
-      - .env
     depends_on:
       - api
+
+volumes:
+  redis-data:
+  postgres_data:

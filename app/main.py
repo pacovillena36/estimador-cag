@@ -7,14 +7,34 @@ from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.config import settings
+from app.db.models import EMBEDDING_DIM
+from app.db.session import create_engine, create_sessionmaker
+from app.guardrails.base import InputRejectedError, ModerationUnavailableError
+from app.guardrails.moderation import get_moderation_client
 from app.logging_config import configure_logging
-from app.routers import estimations
-from app.routers.estimations import InvalidEstimationError
-from app.services.llm_gateway import AllProvidersFailedError, get_llm_gateway
+from app.prompts.loader import PromptVersionNotFoundError, validate_estimation_prompt_version
+from app.routers import encode, estimations, ingest, search, sessions
+from app.attachments import AttachmentError
+from app.dependencies import PayloadTooLargeError
+from app.embedding_pipeline.embedder import EmbeddingProviderError
+from app.embedding_pipeline.schemas import DocumentConflictResponse
+from app.embeddings import EmbeddingError, get_embedder
+from app.schemas import ErrorDetail, ErrorResponse
+from app.semantic_cache.factory import get_semantic_cache
+from app.semantic_cache.ports import CacheUnavailableError
+from app.sessions import SessionCapacityError, SessionNotFoundError
+from app.services.ingestion import DocumentAlreadyIngestedError
+from app.services.llm_gateway import (
+    AllProvidersFailedError,
+    InvalidStructuredOutputError,
+    get_llm_gateway,
+)
 
 configure_logging(settings)
 log = structlog.get_logger(__name__)
@@ -22,6 +42,16 @@ log = structlog.get_logger(__name__)
 # Solo se acepta un X-Request-ID entrante con formato seguro; si no, se
 # genera uno nuevo (evita inyección de contenido arbitrario en los logs).
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+# Los session_id viajan en la ruta y son tokens de acceso: en los logs solo
+# se registra su prefijo.
+_UUID_IN_PATH_RE = re.compile(
+    r"([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
+)
+
+
+def _loggable_path(path: str) -> str:
+    return _UUID_IN_PATH_RE.sub(r"\1-…", path)
 
 
 class RequestContextMiddleware:
@@ -60,7 +90,7 @@ class RequestContextMiddleware:
             log.info(
                 "http.request",
                 method=scope["method"],
-                path=scope["path"],
+                path=_loggable_path(scope["path"]),
                 status_code=status_code,
                 duration_ms=round((time.perf_counter() - start) * 1000, 1),
             )
@@ -79,48 +109,215 @@ class UTF8JSONResponse(JSONResponse):
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
-    # Fail fast: si no hay ningún proveedor con API key, la API no arranca.
+async def lifespan(app: FastAPI):
+    # Fail fast: la API no arranca si no hay ningún proveedor con API key,
+    # si falta la clave de la Moderation API o si la versión de prompt
+    # configurada no existe. Los valores de Settings (tipos, rangos, modos
+    # de guardrail) ya se validan al importar app.config.
     gateway = get_llm_gateway()
-    log.info("app.started", environment=settings.environment, llm_providers=gateway.provider_names)
-    yield
+    get_moderation_client()
+    validate_estimation_prompt_version(settings.prompt_version)
+    validate_estimation_prompt_version(settings.session_prompt_version)
+    if settings.embedding_dim != EMBEDDING_DIM:
+        raise RuntimeError(
+            f"EMBEDDING_DIM={settings.embedding_dim} no coincide con la columna "
+            f"chunks.embedding (Vector({EMBEDDING_DIM})); hace falta una migración."
+        )
+    # Caché semántico: configuración obligatoria si el modo no es off
+    # (fail fast), pero Redis caído no impide arrancar (fail-open): el
+    # índice se crea aquí si existe Redis y, si no, en la primera petición.
+    cache = get_semantic_cache()
+    embedder = get_embedder()
+    cache_ready = None
+    if hasattr(cache, "ensure_index"):
+        try:
+            cache.ensure_index()
+            cache_ready = True
+        except CacheUnavailableError as exc:
+            cache_ready = False
+            log.error("semantic_cache.unavailable_at_startup", error_type=str(exc))
+        # Calentamiento: la primera llamada a la API de embeddings (DNS, TLS,
+        # carga perezosa del SDK) supera a menudo EMBEDDING_TIMEOUT_MS y las
+        # primeras peticiones perderían el caché. Un texto fijo, sin datos
+        # de usuario; si falla, se registra y se sigue (fail-open).
+        try:
+            embedder.embed("warmup")
+        except EmbeddingError as exc:
+            log.warning("semantic_cache.embedder_warmup_failed", error_type=str(exc))
+    log.info(
+        "app.started",
+        environment=settings.environment,
+        llm_providers=gateway.provider_names,
+        prompt_version=settings.prompt_version,
+        guardrail_modes={
+            "moderation": settings.guardrail_moderation_mode.value,
+            "prompt_injection": settings.guardrail_injection_mode.value,
+            "pii_input": settings.guardrail_pii_input_mode.value,
+            "pii_output": settings.guardrail_pii_output_mode.value,
+        },
+        moderation_fail_closed=settings.moderation_fail_closed,
+        min_confidence_pct=settings.min_confidence_pct,
+        semantic_cache_mode=settings.semantic_cache_mode.value,
+        semantic_cache_ready=cache_ready,
+    )
+    # Engine único por proceso; el esquema lo gestiona Alembic, no la app.
+    engine = create_engine(settings)
+    app.state.db_engine = engine
+    app.state.db_sessionmaker = create_sessionmaker(engine)
+    try:
+        yield
+    finally:
+        await engine.dispose()
 
 
 app = FastAPI(
     title="Estimador CAG",
     description=(
         "API para generar estimaciones de proyectos de software a partir de "
-        "transcripciones de reuniones, usando una arquitectura CAG "
-        "(Cache-Augmented Generation): ejemplos de estimaciones previas se "
-        "inyectan directamente como contexto en el prompt del LLM."
+        "la descripción del proyecto, su tipo, el nivel de detalle y el "
+        "formato de salida deseados. Los prompts son templates Jinja2 "
+        "versionados con ejemplos few-shot, la respuesta del modelo es una "
+        "estimación estructurada validada con Pydantic (Instructor) y la "
+        "petición pasa por un pipeline de guardrails de input y de output."
     ),
-    version="0.2.0",
+    version="0.5.0",
     default_response_class=UTF8JSONResponse,
     lifespan=lifespan,
 )
 
 app.add_middleware(RequestContextMiddleware)
 app.include_router(estimations.router, prefix="/api/v1")
+app.include_router(sessions.router, prefix="/api/v1")
+app.include_router(ingest.router, prefix="/embeddings")
+app.include_router(encode.router, prefix="/embeddings")
+app.include_router(search.router)
 
 
-# Los errores del LLM se traducen a respuestas genéricas: el detalle
-# (proveedor, código, mensaje) queda en los logs, nunca en la respuesta.
-@app.exception_handler(AllProvidersFailedError)
-async def _all_providers_failed(_: Request, __: AllProvidersFailedError) -> JSONResponse:
+# ------------------------------------------------------------------ errores
+#
+# Todos los errores se traducen aquí, con un cuerpo único (ErrorResponse) y
+# mensajes genéricos. El detalle interno (proveedor, guardrail o patrón que
+# disparó, trazas) va solo a los logs, nunca al cliente: le enseñaría a un
+# atacante cómo esquivar los filtros.
+
+
+def _request_id() -> str | None:
+    return structlog.contextvars.get_contextvars().get("request_id")
+
+
+def _error(status_code: int, code: str, message: str, headers: dict[str, str] | None = None) -> JSONResponse:
+    body = ErrorResponse(error=ErrorDetail(code=code, message=message, request_id=_request_id()))
+    return UTF8JSONResponse(status_code=status_code, content=body.model_dump(), headers=headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def _request_validation_failed(_: Request, exc: RequestValidationError) -> JSONResponse:
+    # Formato estándar de FastAPI ({"detail": [...]}) pero sin el campo
+    # "input": no se devuelve el eco de lo enviado (p. ej. la descripción).
+    errors = [{k: v for k, v in error.items() if k != "input"} for error in exc.errors()]
+    log.info(
+        "request.invalid",
+        errors=[f"{'.'.join(map(str, e['loc']))}: {e['type']}" for e in errors],
+    )
     return UTF8JSONResponse(
-        status_code=503,
-        content={"detail": "El servicio de IA no está disponible temporalmente. Inténtalo más tarde."},
+        status_code=422,
+        content=jsonable_encoder({"detail": errors, "request_id": _request_id()}),
+    )
+
+
+@app.exception_handler(InputRejectedError)
+async def _input_rejected(_: Request, exc: InputRejectedError) -> JSONResponse:
+    # El guardrail ya ha registrado qué disparó (guardrail.evaluated).
+    log.warning("estimation.input_rejected", guardrail=exc.guardrail)
+    return _error(400, "input_rejected", "No se ha podido procesar la descripción.")
+
+
+@app.exception_handler(ModerationUnavailableError)
+async def _moderation_unavailable(_: Request, __: ModerationUnavailableError) -> JSONResponse:
+    return _error(
+        503,
+        "moderation_unavailable",
+        "El servicio no está disponible temporalmente. Inténtalo más tarde.",
         headers={"Retry-After": "30"},
     )
 
 
-@app.exception_handler(InvalidEstimationError)
-async def _invalid_estimation(_: Request, exc: InvalidEstimationError) -> JSONResponse:
-    log.warning("estimation.invalid", reason=str(exc))
-    return UTF8JSONResponse(
-        status_code=502,
-        content={"detail": "El modelo no devolvió una estimación válida. Inténtalo de nuevo."},
+@app.exception_handler(AllProvidersFailedError)
+async def _all_providers_failed(_: Request, __: AllProvidersFailedError) -> JSONResponse:
+    return _error(
+        503,
+        "llm_unavailable",
+        "El servicio de IA no está disponible temporalmente. Inténtalo más tarde.",
+        headers={"Retry-After": "30"},
     )
+
+
+# El detalle de validación ya lo registra el wrapper (llm.validation_failed).
+@app.exception_handler(InvalidStructuredOutputError)
+async def _invalid_estimation(_: Request, exc: InvalidStructuredOutputError) -> JSONResponse:
+    log.warning("estimation.invalid", reason=str(exc))
+    return _error(502, "estimation_failed", "El modelo no devolvió una estimación válida. Inténtalo de nuevo.")
+
+
+# La versión configurada se valida al arrancar, así que este error solo
+# llega por una ?prompt_version= pedida por el cliente que no existe.
+@app.exception_handler(PromptVersionNotFoundError)
+async def _prompt_version_not_found(_: Request, exc: PromptVersionNotFoundError) -> JSONResponse:
+    log.info("estimation.unknown_prompt_version", reason=str(exc))
+    return _error(422, "invalid_prompt_version", "La versión de prompt pedida no existe.")
+
+
+@app.exception_handler(AttachmentError)
+async def _attachment_rejected(_: Request, exc: AttachmentError) -> JSONResponse:
+    # El motivo concreto (firma, tamaño, zip bomb...) solo va a los logs.
+    log.warning("session.attachment_rejected", code=exc.code, reason=exc.reason)
+    return _error(exc.status_code, exc.code, exc.message)
+
+
+@app.exception_handler(SessionNotFoundError)
+async def _session_not_found(_: Request, __: SessionNotFoundError) -> JSONResponse:
+    # Mismo mensaje para inexistente y expirada: no revela si existió.
+    return _error(404, "session_not_found", "La sesión no existe o ha expirado.")
+
+
+@app.exception_handler(SessionCapacityError)
+async def _sessions_exhausted(_: Request, __: SessionCapacityError) -> JSONResponse:
+    log.warning("session.capacity_reached")
+    return _error(
+        503,
+        "sessions_exhausted",
+        "El servicio no admite más conversaciones en este momento. Inténtalo más tarde.",
+        headers={"Retry-After": "60"},
+    )
+
+
+@app.exception_handler(EmbeddingProviderError)
+async def _embedding_provider_failed(_: Request, exc: EmbeddingProviderError) -> JSONResponse:
+    # Ingesta: no se ha persistido nada (los embeddings van antes de la
+    # transacción de escritura). El tipo de error de la API solo va al log.
+    log.error("embeddings.provider_failed", error_type=str(exc), exc_info=exc.__cause__)
+    return _error(502, "embedding_provider_error", "Embedding provider error")
+
+
+@app.exception_handler(DocumentAlreadyIngestedError)
+async def _document_already_ingested(_: Request, exc: DocumentAlreadyIngestedError) -> JSONResponse:
+    # Contrato del 409: {"detail": ..., "document_id": ...} a nivel raíz
+    # (HTTPException lo anidaría en "detail").
+    log.info("embeddings.document_conflict", document_id=exc.document_id)
+    body = DocumentConflictResponse(document_id=exc.document_id)
+    return UTF8JSONResponse(status_code=409, content=body.model_dump())
+
+
+@app.exception_handler(PayloadTooLargeError)
+async def _payload_too_large(_: Request, exc: PayloadTooLargeError) -> JSONResponse:
+    return _error(413, "payload_too_large", f"El body supera el máximo de {exc.max_bytes} bytes.")
+
+
+@app.exception_handler(Exception)
+async def _unexpected_error(_: Request, exc: Exception) -> JSONResponse:
+    # Cualquier otro error: traza en los logs, mensaje genérico al cliente.
+    log.exception("request.unhandled_error", error_type=type(exc).__name__)
+    return _error(500, "internal_error", "Error interno. Inténtalo de nuevo más tarde.")
 
 
 @app.get("/health", tags=["health"])

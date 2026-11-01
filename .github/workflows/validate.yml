@@ -26,12 +26,18 @@ jobs:
             "app/routers/__init__.py"
             "app/routers/estimations.py"
             "app/services/__init__.py"
-            "app/services/llm_service.py"
             "app/services/llm_gateway.py"
             "app/services/cache.py"
             "app/logging_config.py"
-            "app/context/__init__.py"
-            "app/context/examples.py"
+            "app/schemas.py"
+            "app/prompts/loader.py"
+            "app/prompts/estimation/v1/system.j2"
+            "app/prompts/estimation/v1/user.j2"
+            "app/prompts/estimation/v1/examples.j2"
+            "app/services/llm_pricing.py"
+            "app/ports/llm.py"
+            "evals/golden_dataset.json"
+            "evals/run.py"
             "pyproject.toml"
           )
 
@@ -54,6 +60,9 @@ jobs:
 
       - name: Run tests
         # Los tests simulan los proveedores: no necesitan API keys reales.
+        # Sin Postgres en CI: los tests de integración de pgvector se saltan.
+        env:
+          DATABASE_URL: postgresql+asyncpg://ci:ci@127.0.0.1:5432/ci
         run: uv run pytest -q
 
       - name: Start server and check /health
@@ -62,6 +71,15 @@ jobs:
           # fast). Para comprobar /health basta una clave ficticia: no se
           # llega a llamar a ningún proveedor.
           ANTHROPIC_API_KEY: ci-dummy-key
+          # La Moderation API también es obligatoria al arrancar (fail fast);
+          # el cliente no hace llamadas de red al crearse.
+          MODERATION_API_KEY: ci-dummy-key
+          # Sin Redis en CI: el caché semántico en shadow/active exige
+          # REDIS_URL y clave de embeddings al arrancar.
+          SEMANTIC_CACHE_MODE: "off"
+          # Obligatoria al arrancar; el engine no conecta hasta la primera
+          # consulta, así que /health no necesita Postgres.
+          DATABASE_URL: postgresql+asyncpg://ci:ci@127.0.0.1:5432/ci
         run: |
           uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 &
           SERVER_PID=$!

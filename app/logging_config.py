@@ -60,8 +60,17 @@ def configure_logging(settings: Settings) -> None:
         uvicorn_logger = logging.getLogger(name)
         uvicorn_logger.handlers = []
         uvicorn_logger.propagate = True
+    # El access log de uvicorn es redundante con http.request (middleware) y
+    # registraría la ruta completa, con el session_id (un token de acceso).
+    logging.getLogger("uvicorn.access").disabled = True
 
     # LiteLLM en DEBUG/INFO puede volcar el contenido de los mensajes
     # (transcripciones del cliente): lo limitamos a avisos y errores.
     for name in ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy"):
         logging.getLogger(name).setLevel(logging.WARNING)
+
+    # Instructor registra en ERROR el mensaje completo de cada fallo (del
+    # proveedor o de validación, que puede citar la salida del modelo). El
+    # wrapper ya registra esos fallos sin contenido (llm.provider_failed,
+    # llm.validation_failed), así que se silencia.
+    logging.getLogger("instructor").setLevel(logging.CRITICAL)

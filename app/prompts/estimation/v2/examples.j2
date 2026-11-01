@@ -1,0 +1,99 @@
+{#
+  v2 — variación deliberada respecto a v1: SOLO cambia el set de ejemplos
+  few-shot. v1 usa una app móvil y un pipeline de datos; v2 usa un SaaS web
+  y una herramienta interna (los dos project_type que v1 no cubre).
+  system.j2 y user.j2 son idénticos a v1, así que cualquier diferencia de
+  calidad entre versiones se puede atribuir a los ejemplos.
+  Horas por fase y semanas de calendario (fases consecutivas).
+#}
+{% set examples = [
+    {
+        "description": "Plataforma SaaS de reservas para clínicas de fisioterapia: cada clínica gestiona su agenda y sus profesionales, los pacientes reservan y pagan online, se envían recordatorios por email y SMS, y cada clínica paga una suscripción mensual con distintos planes.",
+        "overview": "SaaS multi-tenant de reservas para clínicas con pagos online, recordatorios y suscripciones con Stripe",
+        "rate": 55,
+        "confidence": 72,
+        "phases": [
+            {"name": "Descubrimiento y diseño UX/UI", "hours": 50, "weeks": 2, "confidence": 85,
+             "assumptions": ["se cuenta con dos clínicas piloto para validar el diseño", "el cliente aporta la identidad visual"]},
+            {"name": "Plataforma multi-tenant y usuarios", "hours": 84, "weeks": 2, "confidence": 75,
+             "assumptions": ["una base de datos compartida con aislamiento por clínica", "sin inicio de sesión con redes sociales"]},
+            {"name": "Agenda y reservas", "hours": 128, "weeks": 4, "confidence": 70,
+             "assumptions": ["un único proveedor de pagos (Stripe)", "el coste de los SMS lo asume cada clínica"]},
+            {"name": "Suscripciones y facturación", "hours": 56, "weeks": 2, "confidence": 70,
+             "assumptions": ["tres planes fijos, sin precios a medida", "cobro recurrente con Stripe Billing"]},
+            {"name": "Despliegue y QA", "hours": 54, "weeks": 2, "confidence": 80,
+             "assumptions": ["despliegue en una sola región", "hasta 200 clínicas el primer año"]},
+        ],
+        "team": "1 jefe de proyecto a tiempo parcial, 1 diseñador UX/UI, 2 desarrolladores full stack y 1 QA a tiempo parcial",
+        "risks": ["la normativa de protección de datos de salud puede exigir medidas adicionales", "la sincronización con calendarios externos (Google, Outlook) puede pedirse a mitad de proyecto"],
+    },
+    {
+        "description": "Herramienta interna para que el departamento de compras de una empresa industrial gestione las solicitudes de material: los empleados crean solicitudes, los responsables las aprueban según el importe y las aprobadas se envían a SAP como pedidos de compra. Acceso con las cuentas corporativas de Microsoft 365.",
+        "overview": "Herramienta web de solicitudes de compra con circuito de aprobación, integración con SAP y SSO con Microsoft 365",
+        "rate": 60,
+        "confidence": 70,
+        "phases": [
+            {"name": "Análisis y diseño", "hours": 32, "weeks": 1, "confidence": 85,
+             "assumptions": ["las reglas de aprobación por importe están documentadas", "un único circuito para todas las sedes"]},
+            {"name": "Aplicación web de solicitudes", "hours": 92, "weeks": 3, "confidence": 80,
+             "assumptions": ["el catálogo de materiales se importa de SAP y no se edita en la herramienta", "avisos de aprobación por email"]},
+            {"name": "Integración con SAP", "hours": 72, "weeks": 2, "confidence": 60,
+             "assumptions": ["el equipo de SAP del cliente expone la API necesaria", "hay un entorno de pruebas de SAP disponible"]},
+            {"name": "SSO con Microsoft 365", "hours": 16, "weeks": 1, "confidence": 85,
+             "assumptions": ["los roles se gestionan con grupos de Entra ID ya existentes"]},
+            {"name": "Pruebas, despliegue y formación", "hours": 44, "weeks": 1, "confidence": 80,
+             "assumptions": ["despliegue en la infraestructura interna", "dos sesiones de formación para los responsables de compras"]},
+        ],
+        "team": "1 jefe de proyecto a tiempo parcial, 2 desarrolladores full stack y 1 consultor SAP a tiempo parcial",
+        "risks": ["la disponibilidad del equipo de SAP del cliente puede retrasar la integración", "pueden aparecer excepciones al circuito de aprobación que no están documentadas"],
+    },
+] %}
+{#
+  Cada ejemplo se renderiza como una instancia de EstimationResult en JSON
+  (un ejemplo de contenido, no una copia del schema). El coste de cada fase
+  es horas x tarifa y los totales se calculan aquí, así que los ejemplos
+  siempre cumplen los validadores del contrato. El nivel de detalle pedido
+  recorta el resumen y las asunciones igual que piden las instrucciones.
+#}
+{% for ex in examples %}
+{% set phases = [] %}
+{% for p in ex.phases %}
+{% set _ = phases.append({
+    "name": p.name,
+    "hours": p.hours,
+    "duration_weeks": p.weeks,
+    "cost_eur": p.hours * ex.rate,
+    "confidence_pct": p.confidence,
+    "assumptions": p.assumptions[:1] if detail_level == "summary" else p.assumptions,
+}) %}
+{% endfor %}
+{% set total_hours = phases | sum(attribute="hours") %}
+{% set total_weeks = phases | sum(attribute="duration_weeks") %}
+{% set total_cost = phases | sum(attribute="cost_eur") %}
+{% set summary = ex.overview ~ ": unas " ~ total_hours ~ " horas en " ~ total_weeks ~ " semanas, con un coste de " ~ total_cost ~ " € (tarifa media de " ~ ex.rate ~ " €/h)." %}
+{% if detail_level != "summary" %}
+{% set summary = summary ~ " Riesgos principales: " ~ (ex.risks | join("; ")) ~ "." %}
+{% endif %}
+{% if detail_level == "detailed" %}
+{% set summary = summary ~ " Equipo recomendado: " ~ ex.team ~ "." %}
+{% endif %}
+### Ejemplo {{ loop.index }}
+
+<project_description>
+{{ ex.description }}
+</project_description>
+
+Estimación:
+
+```json
+{{ {
+    "summary": summary,
+    "total_hours": total_hours,
+    "total_duration_weeks": total_weeks,
+    "total_cost_eur": total_cost,
+    "confidence_pct": ex.confidence,
+    "phases": phases,
+} | tojson }}
+```
+
+{% endfor %}
