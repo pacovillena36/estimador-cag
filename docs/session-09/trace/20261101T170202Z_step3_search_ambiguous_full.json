@@ -1,0 +1,21 @@
+{
+  "path": "/search",
+  "status_code": 422,
+  "elapsed_ms": 6.4,
+  "body": {
+    "detail": [
+      {
+        "type": "string_too_long",
+        "loc": [
+          "body",
+          "query"
+        ],
+        "msg": "String should have at most 2000 characters",
+        "ctx": {
+          "max_length": 2000
+        }
+      }
+    ],
+    "request_id": "187964be739844128e201457c1e46c83"
+  }
+}

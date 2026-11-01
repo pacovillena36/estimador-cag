@@ -1,0 +1,92 @@
+{
+  "path": "/search",
+  "status_code": 200,
+  "elapsed_ms": 981.4,
+  "body": {
+    "query": "Reunión de descubrimiento — Proyecto \"App de banca móvil\"\nCliente: Marta Ledesma (CTO, NeoPagos)\nConsultor: equipo de estimación\nFecha: reunión inicial\n\n[00:00:12] Consultor: Gracias por el tiempo, Marta. Cuéntanos qué tenéis en mente y para cuándo.\n\n[00:00:25] Marta: Sí, vamos al grano que tengo otra a y media. Somos una fintech, NeoPagos. Lo que\nqueremos construir es el backend de una aplicación de banca móvil. El foco para esta primera fase\nes la autenticación y el cumplimiento normativo, que es lo que nos está bloqueando con el regulador.\n\n[00:01:03] Consultor: Perfecto. Cuando dices autenticación, ¿a qué nivel?\n\n[00:01:10] Marta: Necesitamos OAuth 2.0 hecho bien. Authorization code flow y refresh tokens, con\nsesiones gestionadas por JWT. Somos multi-tenant, así que el aislamiento de tokens por cliente es\ncrítico, y queremos rate limiting por cliente desde el día uno. No es negociable.\n\n[00:01:48] Consultor: Entendido. ¿Y la parte de cumplimiento?\n\n[00:01:55] Marta: PSD2. Open banking. Necesitamos los endpoints de información de cuenta y de\niniciación de pagos conformes con PSD2 y con el estándar del Berlin Group. Eso incluye SCA,\nautenticación reforzada de cliente, y un módulo de gestión de consentimientos. Sin esto no salimos.\n\n[00:02:40] Consultor: ¿Qué tecnología tenéis en casa? Para no ir contracorriente.\n\n[00:02:47] Marta: El equipo es de Ruby on Rails, base de datos PostgreSQL, y Redis para cachés y\ncolas. Preferimos seguir con eso. Más adelante habrá un libro mayor de transacciones con escritura\nidempotente y conciliación diaria, pero eso es fase dos; ahora céntrate en autenticación y PSD2.\n\n[00:03:30] Consultor: Clarísimo. Sector financiero, Rails sobre Postgres y Redis, OAuth 2.0 con JWT\ny PSD2 con SCA y consentimientos como alcance de la fase uno.\n\n[00:03:42] Marta: Exacto. Si me pasáis una estimación con fases y coste de aquí a una semana,\npodemos arrancar a final de mes. Cualquier duda me escribís. Me tengo que ir, gracias.",
+    "k": 5,
+    "search_time_ms": 976,
+    "results": [
+      {
+        "chunk_id": 2,
+        "document_id": 1,
+        "chunk_type": "budget_component",
+        "content": "[Project: Mobile banking API with OAuth 2.0 authentication and PSD2 compliance]\n[Client sector: finance | Year: 2024 | Main tech: ruby_on_rails]\n\nComponent: PSD2 open banking connectors\nDescription: Account information and payment initiation endpoints compliant with PSD2/Berlin Group, including strong customer authentication (SCA) and consent management.\nTech stack: ruby_on_rails, postgresql\nComplexity: high\nEstimated hours: 160",
+        "distance": 0.42120470675403365,
+        "metadata": {
+          "year": 2024,
+          "budget_id": "BUD-2024-001",
+          "complexity": "high",
+          "component_id": "PSD2-002",
+          "client_sector": "finance",
+          "estimated_hours": 160.0,
+          "main_technology": "ruby_on_rails"
+        }
+      },
+      {
+        "chunk_id": 1,
+        "document_id": 1,
+        "chunk_type": "budget_component",
+        "content": "[Project: Mobile banking API with OAuth 2.0 authentication and PSD2 compliance]\n[Client sector: finance | Year: 2024 | Main tech: ruby_on_rails]\n\nComponent: OAuth 2.0 authentication backend\nDescription: Implementation of OAuth 2.0 flows (authorization code, refresh token) with JWT-based session management, multi-tenant token isolation, and rate limiting per client.\nTech stack: ruby_on_rails, postgresql, redis\nComplexity: high\nEstimated hours: 120",
+        "distance": 0.43351521764391976,
+        "metadata": {
+          "year": 2024,
+          "budget_id": "BUD-2024-001",
+          "complexity": "high",
+          "component_id": "AUTH-001",
+          "client_sector": "finance",
+          "estimated_hours": 120.0,
+          "main_technology": "ruby_on_rails"
+        }
+      },
+      {
+        "chunk_id": 3,
+        "document_id": 1,
+        "chunk_type": "budget_component",
+        "content": "[Project: Mobile banking API with OAuth 2.0 authentication and PSD2 compliance]\n[Client sector: finance | Year: 2024 | Main tech: ruby_on_rails]\n\nComponent: Transaction ledger service\nDescription: Double-entry transaction ledger with idempotent writes, daily reconciliation jobs and an audit trail of every balance change.\nTech stack: ruby_on_rails, postgresql, sidekiq\nComplexity: medium\nEstimated hours: 140",
+        "distance": 0.4468934616755623,
+        "metadata": {
+          "year": 2024,
+          "budget_id": "BUD-2024-001",
+          "complexity": "medium",
+          "component_id": "TXN-003",
+          "client_sector": "finance",
+          "estimated_hours": 140.0,
+          "main_technology": "ruby_on_rails"
+        }
+      },
+      {
+        "chunk_id": 4,
+        "document_id": 1,
+        "chunk_type": "budget_component",
+        "content": "[Project: Mobile banking API with OAuth 2.0 authentication and PSD2 compliance]\n[Client sector: finance | Year: 2024 | Main tech: ruby_on_rails]\n\nComponent: Push and email notifications\nDescription: Event-driven notifications for transaction alerts and security events delivered via APNs/FCM and transactional email.\nTech stack: ruby_on_rails, redis\nComplexity: low\nEstimated hours: 60",
+        "distance": 0.4727121314627709,
+        "metadata": {
+          "year": 2024,
+          "budget_id": "BUD-2024-001",
+          "complexity": "low",
+          "component_id": "NOTIF-004",
+          "client_sector": "finance",
+          "estimated_hours": 60.0,
+          "main_technology": "ruby_on_rails"
+        }
+      },
+      {
+        "chunk_id": 9,
+        "document_id": 3,
+        "chunk_type": "budget_component",
+        "content": "[Project: Real-time payments gateway with fraud detection and reconciliation]\n[Client sector: finance | Year: 2023 | Main tech: java_spring]\n\nComponent: Payment gateway core\nDescription: High-throughput payment authorization and capture service with idempotency keys, retry semantics and pluggable acquirer adapters.\nTech stack: java_spring, kafka, postgresql\nComplexity: high\nEstimated hours: 220",
+        "distance": 0.48770736083660715,
+        "metadata": {
+          "year": 2023,
+          "budget_id": "BUD-2024-003",
+          "complexity": "high",
+          "component_id": "GATE-001",
+          "client_sector": "finance",
+          "estimated_hours": 220.0,
+          "main_technology": "java_spring"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,634 @@
+{
+  "summaries": {
+    "ambiguous": {
+      "label": "ambiguous",
+      "top5_dispersion": {
+        "n": 5,
+        "min_distance": 0.6105203608411944,
+        "max_distance": 0.6432356029776025,
+        "spread": 0.032715242136408085,
+        "mean_distance": 0.6299727836244993,
+        "pstdev": 0.01381170049164259
+      },
+      "top20_dispersion": {
+        "n": 20,
+        "min_distance": 0.6105203608411944,
+        "max_distance": 0.7004375363620517,
+        "spread": 0.08991717552085732,
+        "mean_distance": 0.6684779560537162,
+        "pstdev": 0.026123061300601907
+      },
+      "top5_budgets": {
+        "BUD-2024-005": 4,
+        "BUD-2024-008": 1
+      },
+      "top5_sectors": {
+        "ecommerce": 5
+      },
+      "top20_sectors": {
+        "ecommerce": 11,
+        "industrial": 5,
+        "healthcare": 2,
+        "finance": 2
+      }
+    },
+    "clear": {
+      "label": "clear",
+      "top5_dispersion": {
+        "n": 5,
+        "min_distance": 0.42088314273143757,
+        "max_distance": 0.48741526701807836,
+        "spread": 0.06653212428664079,
+        "mean_distance": 0.45201737140969095,
+        "pstdev": 0.024621797545022323
+      },
+      "top20_dispersion": {
+        "n": 20,
+        "min_distance": 0.42088314273143757,
+        "max_distance": 0.5701080095717591,
+        "spread": 0.14922486684032155,
+        "mean_distance": 0.5218058164085302,
+        "pstdev": 0.046986076943764075
+      },
+      "top5_budgets": {
+        "BUD-2024-001": 4,
+        "BUD-2024-003": 1
+      },
+      "top5_sectors": {
+        "finance": 5
+      },
+      "top20_sectors": {
+        "finance": 13,
+        "ecommerce": 4,
+        "healthcare": 3
+      }
+    },
+    "phrase_sell_online": {
+      "label": "phrase_sell_online",
+      "top5_dispersion": {
+        "n": 5,
+        "min_distance": 0.749804470481797,
+        "max_distance": 0.7975476229899856,
+        "spread": 0.04774315250818861,
+        "mean_distance": 0.773005021378037,
+        "pstdev": 0.01627912803870766
+      },
+      "top20_dispersion": {
+        "n": 20,
+        "min_distance": 0.749804470481797,
+        "max_distance": 0.8766952156393204,
+        "spread": 0.1268907451575234,
+        "mean_distance": 0.8235250808244123,
+        "pstdev": 0.03679138167562777
+      },
+      "top5_budgets": {
+        "BUD-2024-005": 4,
+        "BUD-2024-008": 1
+      },
+      "top5_sectors": {
+        "ecommerce": 5
+      },
+      "top20_sectors": {
+        "ecommerce": 14,
+        "healthcare": 3,
+        "finance": 2,
+        "industrial": 1
+      }
+    },
+    "phrase_card_payment": {
+      "label": "phrase_card_payment",
+      "top5_dispersion": {
+        "n": 5,
+        "min_distance": 0.6899381738307029,
+        "max_distance": 0.7782213001389443,
+        "spread": 0.08828312630824142,
+        "mean_distance": 0.7372966194093247,
+        "pstdev": 0.03211417760006521
+      },
+      "top20_dispersion": {
+        "n": 20,
+        "min_distance": 0.6899381738307029,
+        "max_distance": 0.8427836853981465,
+        "spread": 0.15284551156744364,
+        "mean_distance": 0.7962548652415518,
+        "pstdev": 0.04105271917129557
+      },
+      "top5_budgets": {
+        "BUD-2024-003": 4,
+        "BUD-2024-001": 1
+      },
+      "top5_sectors": {
+        "finance": 5
+      },
+      "top20_sectors": {
+        "finance": 11,
+        "ecommerce": 7,
+        "healthcare": 2
+      }
+    }
+  },
+  "sql_vs_search": {
+    "clear": {
+      "same_chunk_order": true,
+      "max_abs_distance_diff": 0.0005199693802471206
+    },
+    "phrase_sell_online": {
+      "same_chunk_order": true,
+      "max_abs_distance_diff": 3.120838871339959e-05
+    },
+    "phrase_card_payment": {
+      "same_chunk_order": true,
+      "max_abs_distance_diff": 0.0
+    }
+  },
+  "top20": {
+    "ambiguous": [
+      {
+        "chunk_id": 16,
+        "distance": 0.6105203608411944,
+        "budget_id": "BUD-2024-005",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 17,
+        "distance": 0.6159868325307061,
+        "budget_id": "BUD-2024-005",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 18,
+        "distance": 0.6396230138333749,
+        "budget_id": "BUD-2024-005",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 19,
+        "distance": 0.6404981079396186,
+        "budget_id": "BUD-2024-005",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 27,
+        "distance": 0.6432356029776025,
+        "budget_id": "BUD-2024-008",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 26,
+        "distance": 0.6531912524124208,
+        "budget_id": "BUD-2024-007",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 38,
+        "distance": 0.6667181834419984,
+        "budget_id": "BUD-2024-011",
+        "sector": "healthcare"
+      },
+      {
+        "chunk_id": 12,
+        "distance": 0.6685753785792911,
+        "budget_id": "BUD-2024-003",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 25,
+        "distance": 0.6692228054160809,
+        "budget_id": "BUD-2024-007",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 52,
+        "distance": 0.6700714130013506,
+        "budget_id": "BUD-2024-015",
+        "sector": "industrial"
+      },
+      {
+        "chunk_id": 24,
+        "distance": 0.672175880055668,
+        "budget_id": "BUD-2024-007",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 46,
+        "distance": 0.6765825228866873,
+        "budget_id": "BUD-2024-014",
+        "sector": "industrial"
+      },
+      {
+        "chunk_id": 32,
+        "distance": 0.6834512452961998,
+        "budget_id": "BUD-2024-009",
+        "sector": "healthcare"
+      },
+      {
+        "chunk_id": 21,
+        "distance": 0.6894084852409843,
+        "budget_id": "BUD-2024-006",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 28,
+        "distance": 0.6911027390941612,
+        "budget_id": "BUD-2024-008",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 49,
+        "distance": 0.6927648885763288,
+        "budget_id": "BUD-2024-014",
+        "sector": "industrial"
+      },
+      {
+        "chunk_id": 29,
+        "distance": 0.692991074280505,
+        "budget_id": "BUD-2024-008",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 47,
+        "distance": 0.6949060868847977,
+        "budget_id": "BUD-2024-014",
+        "sector": "industrial"
+      },
+      {
+        "chunk_id": 48,
+        "distance": 0.6980957114233018,
+        "budget_id": "BUD-2024-014",
+        "sector": "industrial"
+      },
+      {
+        "chunk_id": 9,
+        "distance": 0.7004375363620517,
+        "budget_id": "BUD-2024-003",
+        "sector": "finance"
+      }
+    ],
+    "clear": [
+      {
+        "chunk_id": 2,
+        "distance": 0.42088314273143757,
+        "budget_id": "BUD-2024-001",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 1,
+        "distance": 0.43300966672810126,
+        "budget_id": "BUD-2024-001",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 3,
+        "distance": 0.4463734922953152,
+        "budget_id": "BUD-2024-001",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 4,
+        "distance": 0.4724052882755224,
+        "budget_id": "BUD-2024-001",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 9,
+        "distance": 0.48741526701807836,
+        "budget_id": "BUD-2024-003",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 12,
+        "distance": 0.49336395932418087,
+        "budget_id": "BUD-2024-003",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 11,
+        "distance": 0.5058672124291662,
+        "budget_id": "BUD-2024-003",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 6,
+        "distance": 0.520669564625073,
+        "budget_id": "BUD-2024-002",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 10,
+        "distance": 0.5268038776699644,
+        "budget_id": "BUD-2024-003",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 15,
+        "distance": 0.529624155966886,
+        "budget_id": "BUD-2024-004",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 5,
+        "distance": 0.5337901837243342,
+        "budget_id": "BUD-2024-002",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 7,
+        "distance": 0.5503830143473862,
+        "budget_id": "BUD-2024-002",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 17,
+        "distance": 0.5582681174409981,
+        "budget_id": "BUD-2024-005",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 14,
+        "distance": 0.5603524078345817,
+        "budget_id": "BUD-2024-004",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 32,
+        "distance": 0.5625190749218858,
+        "budget_id": "BUD-2024-009",
+        "sector": "healthcare"
+      },
+      {
+        "chunk_id": 20,
+        "distance": 0.5636012927291607,
+        "budget_id": "BUD-2024-006",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 26,
+        "distance": 0.5646395557643882,
+        "budget_id": "BUD-2024-007",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 24,
+        "distance": 0.5673652163119824,
+        "budget_id": "BUD-2024-007",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 33,
+        "distance": 0.5686738284604024,
+        "budget_id": "BUD-2024-009",
+        "sector": "healthcare"
+      },
+      {
+        "chunk_id": 40,
+        "distance": 0.5701080095717591,
+        "budget_id": "BUD-2024-012",
+        "sector": "healthcare"
+      }
+    ],
+    "phrase_sell_online": [
+      {
+        "chunk_id": 16,
+        "distance": 0.749804470481797,
+        "budget_id": "BUD-2024-005",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 19,
+        "distance": 0.7639003534637306,
+        "budget_id": "BUD-2024-005",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 17,
+        "distance": 0.7709104994067972,
+        "budget_id": "BUD-2024-005",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 18,
+        "distance": 0.7828621605478742,
+        "budget_id": "BUD-2024-005",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 27,
+        "distance": 0.7975476229899856,
+        "budget_id": "BUD-2024-008",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 29,
+        "distance": 0.7989977608880305,
+        "budget_id": "BUD-2024-008",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 26,
+        "distance": 0.8100468296125155,
+        "budget_id": "BUD-2024-007",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 21,
+        "distance": 0.8165045838124787,
+        "budget_id": "BUD-2024-006",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 38,
+        "distance": 0.819754027547313,
+        "budget_id": "BUD-2024-011",
+        "sector": "healthcare"
+      },
+      {
+        "chunk_id": 24,
+        "distance": 0.8255232639380778,
+        "budget_id": "BUD-2024-007",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 25,
+        "distance": 0.8291364438913591,
+        "budget_id": "BUD-2024-007",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 20,
+        "distance": 0.8317139147912369,
+        "budget_id": "BUD-2024-006",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 22,
+        "distance": 0.8408190243936565,
+        "budget_id": "BUD-2024-006",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 28,
+        "distance": 0.8409966998128554,
+        "budget_id": "BUD-2024-008",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 23,
+        "distance": 0.8414612933061735,
+        "budget_id": "BUD-2024-006",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 37,
+        "distance": 0.8560695171901479,
+        "budget_id": "BUD-2024-011",
+        "sector": "healthcare"
+      },
+      {
+        "chunk_id": 46,
+        "distance": 0.871120654208603,
+        "budget_id": "BUD-2024-014",
+        "sector": "industrial"
+      },
+      {
+        "chunk_id": 39,
+        "distance": 0.8733081955856739,
+        "budget_id": "BUD-2024-011",
+        "sector": "healthcare"
+      },
+      {
+        "chunk_id": 12,
+        "distance": 0.87332908498062,
+        "budget_id": "BUD-2024-003",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 6,
+        "distance": 0.8766952156393204,
+        "budget_id": "BUD-2024-002",
+        "sector": "finance"
+      }
+    ],
+    "phrase_card_payment": [
+      {
+        "chunk_id": 9,
+        "distance": 0.6899381738307029,
+        "budget_id": "BUD-2024-003",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 12,
+        "distance": 0.7146834665573031,
+        "budget_id": "BUD-2024-003",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 10,
+        "distance": 0.7394561436449145,
+        "budget_id": "BUD-2024-003",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 11,
+        "distance": 0.7641840128747589,
+        "budget_id": "BUD-2024-003",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 2,
+        "distance": 0.7782213001389443,
+        "budget_id": "BUD-2024-001",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 17,
+        "distance": 0.780690584086386,
+        "budget_id": "BUD-2024-005",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 3,
+        "distance": 0.7913488697195997,
+        "budget_id": "BUD-2024-001",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 1,
+        "distance": 0.7968415110865832,
+        "budget_id": "BUD-2024-001",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 4,
+        "distance": 0.800131438550064,
+        "budget_id": "BUD-2024-001",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 20,
+        "distance": 0.8018637807718213,
+        "budget_id": "BUD-2024-006",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 7,
+        "distance": 0.8086787291276174,
+        "budget_id": "BUD-2024-002",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 5,
+        "distance": 0.8101073925507835,
+        "budget_id": "BUD-2024-002",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 22,
+        "distance": 0.8148533096818626,
+        "budget_id": "BUD-2024-006",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 24,
+        "distance": 0.8160107330743929,
+        "budget_id": "BUD-2024-007",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 6,
+        "distance": 0.8277755424717322,
+        "budget_id": "BUD-2024-002",
+        "sector": "finance"
+      },
+      {
+        "chunk_id": 16,
+        "distance": 0.834256217805837,
+        "budget_id": "BUD-2024-005",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 23,
+        "distance": 0.8361966510488554,
+        "budget_id": "BUD-2024-006",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 21,
+        "distance": 0.8381440382354787,
+        "budget_id": "BUD-2024-006",
+        "sector": "ecommerce"
+      },
+      {
+        "chunk_id": 38,
+        "distance": 0.8389317241752501,
+        "budget_id": "BUD-2024-011",
+        "sector": "healthcare"
+      },
+      {
+        "chunk_id": 37,
+        "distance": 0.8427836853981465,
+        "budget_id": "BUD-2024-011",
+        "sector": "healthcare"
+      }
+    ]
+  }
+}

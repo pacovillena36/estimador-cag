@@ -1,0 +1,122 @@
+[
+  {
+    "chunk_id": 16,
+    "document_id": 5,
+    "chunk_type": "budget_component",
+    "content": "[Project: Headless e-commerce storefront with personalized recommendations]\n[Client sector: ecommerce | Year: 2024 | Main tech: node]\n\nComponent: Product catalog API\nDescription: GraphQL catalog API with faceted search, inventory availability and multi-currency pricing backed by Elasticsearch.\nTech stack: node, graphql, elasticsearch\nComplexity: medium\nEstimated hours: 150",
+    "metadata": {
+      "year": 2024,
+      "budget_id": "BUD-2024-005",
+      "complexity": "medium",
+      "component_id": "CATALOG-001",
+      "client_sector": "ecommerce",
+      "estimated_hours": 150.0,
+      "main_technology": "node"
+    },
+    "document_metadata": {
+      "year": 2024,
+      "country": "ES",
+      "budget_id": "BUD-2024-005",
+      "client_sector": "ecommerce",
+      "main_technology": "node",
+      "total_estimated_hours": 460.0
+    },
+    "distance": 0.6105203608411944
+  },
+  {
+    "chunk_id": 17,
+    "document_id": 5,
+    "chunk_type": "budget_component",
+    "content": "[Project: Headless e-commerce storefront with personalized recommendations]\n[Client sector: ecommerce | Year: 2024 | Main tech: node]\n\nComponent: Cart and checkout service\nDescription: Stateless cart service with promotion engine, tax calculation and a checkout orchestration that integrates the payment provider.\nTech stack: node, redis, postgresql\nComplexity: high\nEstimated hours: 140",
+    "metadata": {
+      "year": 2024,
+      "budget_id": "BUD-2024-005",
+      "complexity": "high",
+      "component_id": "CART-002",
+      "client_sector": "ecommerce",
+      "estimated_hours": 140.0,
+      "main_technology": "node"
+    },
+    "document_metadata": {
+      "year": 2024,
+      "country": "ES",
+      "budget_id": "BUD-2024-005",
+      "client_sector": "ecommerce",
+      "main_technology": "node",
+      "total_estimated_hours": 460.0
+    },
+    "distance": 0.6159868325307061
+  },
+  {
+    "chunk_id": 18,
+    "document_id": 5,
+    "chunk_type": "budget_component",
+    "content": "[Project: Headless e-commerce storefront with personalized recommendations]\n[Client sector: ecommerce | Year: 2024 | Main tech: node]\n\nComponent: Personalized recommendations\nDescription: Collaborative-filtering recommendations served from a feature store and exposed as a low-latency API for product and cart pages.\nTech stack: node, redis\nComplexity: medium\nEstimated hours: 110",
+    "metadata": {
+      "year": 2024,
+      "budget_id": "BUD-2024-005",
+      "complexity": "medium",
+      "component_id": "RECO-003",
+      "client_sector": "ecommerce",
+      "estimated_hours": 110.0,
+      "main_technology": "node"
+    },
+    "document_metadata": {
+      "year": 2024,
+      "country": "ES",
+      "budget_id": "BUD-2024-005",
+      "client_sector": "ecommerce",
+      "main_technology": "node",
+      "total_estimated_hours": 460.0
+    },
+    "distance": 0.6396230138333749
+  },
+  {
+    "chunk_id": 19,
+    "document_id": 5,
+    "chunk_type": "budget_component",
+    "content": "[Project: Headless e-commerce storefront with personalized recommendations]\n[Client sector: ecommerce | Year: 2024 | Main tech: node]\n\nComponent: Storefront PWA\nDescription: Progressive web app storefront consuming the headless APIs with server-side rendering for SEO.\nTech stack: next_js, react\nComplexity: low\nEstimated hours: 60",
+    "metadata": {
+      "year": 2024,
+      "budget_id": "BUD-2024-005",
+      "complexity": "low",
+      "component_id": "STORE-004",
+      "client_sector": "ecommerce",
+      "estimated_hours": 60.0,
+      "main_technology": "node"
+    },
+    "document_metadata": {
+      "year": 2024,
+      "country": "ES",
+      "budget_id": "BUD-2024-005",
+      "client_sector": "ecommerce",
+      "main_technology": "node",
+      "total_estimated_hours": 460.0
+    },
+    "distance": 0.6404981079396186
+  },
+  {
+    "chunk_id": 27,
+    "document_id": 8,
+    "chunk_type": "budget_component",
+    "content": "[Project: Fashion returns management and resale portal]\n[Client sector: ecommerce | Year: 2023 | Main tech: dotnet]\n\nComponent: Returns portal\nDescription: Self-service returns portal with label generation, reason capture and automatic restock or resale routing.\nTech stack: dotnet, sqlserver\nComplexity: medium\nEstimated hours: 140",
+    "metadata": {
+      "year": 2023,
+      "budget_id": "BUD-2024-008",
+      "complexity": "medium",
+      "component_id": "RET-001",
+      "client_sector": "ecommerce",
+      "estimated_hours": 140.0,
+      "main_technology": "dotnet"
+    },
+    "document_metadata": {
+      "year": 2023,
+      "country": "IT",
+      "budget_id": "BUD-2024-008",
+      "client_sector": "ecommerce",
+      "main_technology": "dotnet",
+      "total_estimated_hours": 300.0
+    },
+    "distance": 0.6432356029776025
+  }
+]

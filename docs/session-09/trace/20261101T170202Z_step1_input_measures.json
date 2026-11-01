@@ -1,0 +1,41 @@
+{
+  "model": "text-embedding-3-small",
+  "model_max_input_tokens": 8191,
+  "transcripts": {
+    "examples\\transcripts\\02_ambiguous.txt": {
+      "chars": 2853,
+      "tokens": 890
+    },
+    "examples\\transcripts\\01_clear.txt": {
+      "chars": 1974,
+      "tokens": 599
+    }
+  },
+  "corpus_chunks": {
+    "n": 52,
+    "mean_chars": 372.78846153846155,
+    "min_chars": 308,
+    "max_chars": 450,
+    "mean_tokens": 79.34615384615384,
+    "min_tokens": 66,
+    "max_tokens": 106
+  },
+  "oversized_encode_probe": {
+    "tokens": 9001,
+    "status_code": 422,
+    "body": {
+      "detail": [
+        {
+          "type": "text_too_long",
+          "loc": [
+            "body",
+            "texts",
+            0
+          ],
+          "msg": "Text exceeds 8191 tokens"
+        }
+      ],
+      "request_id": "4f02746bc63d4d5b92864664aacc6f55"
+    }
+  }
+}

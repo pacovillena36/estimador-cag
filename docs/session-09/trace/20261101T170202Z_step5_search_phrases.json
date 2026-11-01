@@ -1,0 +1,186 @@
+{
+  "phrase_sell_online": {
+    "path": "/search",
+    "status_code": 200,
+    "elapsed_ms": 356.8,
+    "body": {
+      "query": "lo ideal sería vender por internet, eso seguro. Que la gente entre, vea los productos y compre",
+      "k": 5,
+      "search_time_ms": 351,
+      "results": [
+        {
+          "chunk_id": 16,
+          "document_id": 5,
+          "chunk_type": "budget_component",
+          "content": "[Project: Headless e-commerce storefront with personalized recommendations]\n[Client sector: ecommerce | Year: 2024 | Main tech: node]\n\nComponent: Product catalog API\nDescription: GraphQL catalog API with faceted search, inventory availability and multi-currency pricing backed by Elasticsearch.\nTech stack: node, graphql, elasticsearch\nComplexity: medium\nEstimated hours: 150",
+          "distance": 0.74979638050732,
+          "metadata": {
+            "year": 2024,
+            "budget_id": "BUD-2024-005",
+            "complexity": "medium",
+            "component_id": "CATALOG-001",
+            "client_sector": "ecommerce",
+            "estimated_hours": 150.0,
+            "main_technology": "node"
+          }
+        },
+        {
+          "chunk_id": 19,
+          "document_id": 5,
+          "chunk_type": "budget_component",
+          "content": "[Project: Headless e-commerce storefront with personalized recommendations]\n[Client sector: ecommerce | Year: 2024 | Main tech: node]\n\nComponent: Storefront PWA\nDescription: Progressive web app storefront consuming the headless APIs with server-side rendering for SEO.\nTech stack: next_js, react\nComplexity: low\nEstimated hours: 60",
+          "distance": 0.7638691450750172,
+          "metadata": {
+            "year": 2024,
+            "budget_id": "BUD-2024-005",
+            "complexity": "low",
+            "component_id": "STORE-004",
+            "client_sector": "ecommerce",
+            "estimated_hours": 60.0,
+            "main_technology": "node"
+          }
+        },
+        {
+          "chunk_id": 17,
+          "document_id": 5,
+          "chunk_type": "budget_component",
+          "content": "[Project: Headless e-commerce storefront with personalized recommendations]\n[Client sector: ecommerce | Year: 2024 | Main tech: node]\n\nComponent: Cart and checkout service\nDescription: Stateless cart service with promotion engine, tax calculation and a checkout orchestration that integrates the payment provider.\nTech stack: node, redis, postgresql\nComplexity: high\nEstimated hours: 140",
+          "distance": 0.7708972664243767,
+          "metadata": {
+            "year": 2024,
+            "budget_id": "BUD-2024-005",
+            "complexity": "high",
+            "component_id": "CART-002",
+            "client_sector": "ecommerce",
+            "estimated_hours": 140.0,
+            "main_technology": "node"
+          }
+        },
+        {
+          "chunk_id": 18,
+          "document_id": 5,
+          "chunk_type": "budget_component",
+          "content": "[Project: Headless e-commerce storefront with personalized recommendations]\n[Client sector: ecommerce | Year: 2024 | Main tech: node]\n\nComponent: Personalized recommendations\nDescription: Collaborative-filtering recommendations served from a feature store and exposed as a low-latency API for product and cart pages.\nTech stack: node, redis\nComplexity: medium\nEstimated hours: 110",
+          "distance": 0.7828365038604477,
+          "metadata": {
+            "year": 2024,
+            "budget_id": "BUD-2024-005",
+            "complexity": "medium",
+            "component_id": "RECO-003",
+            "client_sector": "ecommerce",
+            "estimated_hours": 110.0,
+            "main_technology": "node"
+          }
+        },
+        {
+          "chunk_id": 27,
+          "document_id": 8,
+          "chunk_type": "budget_component",
+          "content": "[Project: Fashion returns management and resale portal]\n[Client sector: ecommerce | Year: 2023 | Main tech: dotnet]\n\nComponent: Returns portal\nDescription: Self-service returns portal with label generation, reason capture and automatic restock or resale routing.\nTech stack: dotnet, sqlserver\nComplexity: medium\nEstimated hours: 140",
+          "distance": 0.7975542715135144,
+          "metadata": {
+            "year": 2023,
+            "budget_id": "BUD-2024-008",
+            "complexity": "medium",
+            "component_id": "RET-001",
+            "client_sector": "ecommerce",
+            "estimated_hours": 140.0,
+            "main_technology": "dotnet"
+          }
+        }
+      ]
+    }
+  },
+  "phrase_card_payment": {
+    "path": "/search",
+    "status_code": 200,
+    "elapsed_ms": 179.1,
+    "body": {
+      "query": "que la gente pueda pagar con tarjeta, claro. Eso es fundamental, que el pago sea fácil y seguro",
+      "k": 5,
+      "search_time_ms": 174,
+      "results": [
+        {
+          "chunk_id": 9,
+          "document_id": 3,
+          "chunk_type": "budget_component",
+          "content": "[Project: Real-time payments gateway with fraud detection and reconciliation]\n[Client sector: finance | Year: 2023 | Main tech: java_spring]\n\nComponent: Payment gateway core\nDescription: High-throughput payment authorization and capture service with idempotency keys, retry semantics and pluggable acquirer adapters.\nTech stack: java_spring, kafka, postgresql\nComplexity: high\nEstimated hours: 220",
+          "distance": 0.6899381738307029,
+          "metadata": {
+            "year": 2023,
+            "budget_id": "BUD-2024-003",
+            "complexity": "high",
+            "component_id": "GATE-001",
+            "client_sector": "finance",
+            "estimated_hours": 220.0,
+            "main_technology": "java_spring"
+          }
+        },
+        {
+          "chunk_id": 12,
+          "document_id": 3,
+          "chunk_type": "budget_component",
+          "content": "[Project: Real-time payments gateway with fraud detection and reconciliation]\n[Client sector: finance | Year: 2023 | Main tech: java_spring]\n\nComponent: Merchant dashboard\nDescription: Merchant-facing dashboard for transaction search, refunds and payout tracking.\nTech stack: react, java_spring\nComplexity: low\nEstimated hours: 60",
+          "distance": 0.7146834665573031,
+          "metadata": {
+            "year": 2023,
+            "budget_id": "BUD-2024-003",
+            "complexity": "low",
+            "component_id": "DASH-004",
+            "client_sector": "finance",
+            "estimated_hours": 60.0,
+            "main_technology": "java_spring"
+          }
+        },
+        {
+          "chunk_id": 10,
+          "document_id": 3,
+          "chunk_type": "budget_component",
+          "content": "[Project: Real-time payments gateway with fraud detection and reconciliation]\n[Client sector: finance | Year: 2023 | Main tech: java_spring]\n\nComponent: Real-time fraud detection\nDescription: Streaming fraud scoring on the authorization path using velocity rules and a gradient-boosted model served with sub-50ms latency.\nTech stack: java_spring, kafka, redis\nComplexity: high\nEstimated hours: 200",
+          "distance": 0.7394561436449145,
+          "metadata": {
+            "year": 2023,
+            "budget_id": "BUD-2024-003",
+            "complexity": "high",
+            "component_id": "FRAUD-002",
+            "client_sector": "finance",
+            "estimated_hours": 200.0,
+            "main_technology": "java_spring"
+          }
+        },
+        {
+          "chunk_id": 11,
+          "document_id": 3,
+          "chunk_type": "budget_component",
+          "content": "[Project: Real-time payments gateway with fraud detection and reconciliation]\n[Client sector: finance | Year: 2023 | Main tech: java_spring]\n\nComponent: Settlement reconciliation\nDescription: Daily settlement file ingestion and three-way reconciliation between gateway, acquirer and ledger with exception queues.\nTech stack: java_spring, postgresql\nComplexity: medium\nEstimated hours: 120",
+          "distance": 0.7641840128747589,
+          "metadata": {
+            "year": 2023,
+            "budget_id": "BUD-2024-003",
+            "complexity": "medium",
+            "component_id": "RECON-003",
+            "client_sector": "finance",
+            "estimated_hours": 120.0,
+            "main_technology": "java_spring"
+          }
+        },
+        {
+          "chunk_id": 2,
+          "document_id": 1,
+          "chunk_type": "budget_component",
+          "content": "[Project: Mobile banking API with OAuth 2.0 authentication and PSD2 compliance]\n[Client sector: finance | Year: 2024 | Main tech: ruby_on_rails]\n\nComponent: PSD2 open banking connectors\nDescription: Account information and payment initiation endpoints compliant with PSD2/Berlin Group, including strong customer authentication (SCA) and consent management.\nTech stack: ruby_on_rails, postgresql\nComplexity: high\nEstimated hours: 160",
+          "distance": 0.7782213001389443,
+          "metadata": {
+            "year": 2024,
+            "budget_id": "BUD-2024-001",
+            "complexity": "high",
+            "component_id": "PSD2-002",
+            "client_sector": "finance",
+            "estimated_hours": 160.0,
+            "main_technology": "ruby_on_rails"
+          }
+        }
+      ]
+    }
+  }
+}
