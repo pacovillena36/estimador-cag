@@ -155,7 +155,7 @@ POST /embeddings/encode  {"texts": ["word " * 9000]}    # texto sintético, sin 
 | `01_clear.txt` | 1974 | 599 | 7,5 | 7,3 % |
 | Chunk medio del corpus (mín.–máx.) | 372,8 (308–450) | 79,3 (66–106) | 1 | 1,0 % |
 
- El límite de tokens de entrada del modelo de embeddings es de 8191 tokens
+El límite de tokens de entrada del modelo de embeddings es de 8191 tokens.
 
 Respuesta cruda de la prueba por encima del límite (9001 tokens):
 
