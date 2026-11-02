@@ -1,7 +1,7 @@
 # Diagnóstico arquitectónico — Sesión 09 (pre-work)
 
 ## Resumen
-Hay capacidades que no están conectadas. EL sistema sabe generar estimaciones de proyectos con inteligencia artificial, y también sabe buscar en nuestro archivo de presupuestos históricos. Pero al estimar no consulta ese archivo, así que las cifras no se apoyan en lo que nos costaron de verdad proyectos parecidos.
+Hay capacidades que no están conectadas. El sistema sabe generar estimaciones de proyectos con inteligencia artificial, y también sabe buscar en nuestro archivo de presupuestos históricos. Pero al estimar no consulta ese archivo, así que las cifras no se apoyan en lo que nos costaron de verdad proyectos parecidos.
 
 Para comprobarlo, probamos el sistema con una reunión simulada de cinco minutos con el dueño de una tienda gourmet, que quiere vender por internet, cobrar con tarjeta, tener un club de puntos, un panel de control y avisos por correo.
 
@@ -19,7 +19,7 @@ Proponemos que el sistema trabaje como un buen consultor: entender qué pide el 
 
 Si solo pudiéramos construir una pieza, sería la que conecta el archivo con la estimación, porque sin ella ninguna otra mejora llega al resultado. Eso sí, por sí sola arrastraría las limitaciones de la búsqueda actual, así que el siguiente paso sería mejorar cómo se interpreta la reunión.
 
-Conviene tener claros tres límites. Son pruebas con pocas consultas y un archivo pequeño, de 15 presupuestos, así que señalan problemas reales, pero no permiten calcular cuánto mejorarían las estimaciones. Tampoco hemos medido aún la calidad de las estimaciones actuales ni calculado el coste y el plazo de esta evolución. creo que es mejor empezar por esa primera pieza, comparando las estimaciones antes y después de conectarla.
+Conviene tener claros tres límites. Son pruebas con pocas consultas y un archivo pequeño, de 15 presupuestos, así que señalan problemas reales, pero no permiten calcular cuánto mejorarían las estimaciones. Tampoco hemos medido aún la calidad de las estimaciones actuales ni calculado el coste y el plazo de esta evolución. Creo que es mejor empezar por esa primera pieza, comparando las estimaciones antes y después de conectarla.
 
 ## 1. Diagrama de la arquitectura actual
 
@@ -155,7 +155,7 @@ POST /embeddings/encode  {"texts": ["word " * 9000]}    # texto sintético, sin 
 | `01_clear.txt` | 1974 | 599 | 7,5 | 7,3 % |
 | Chunk medio del corpus (mín.–máx.) | 372,8 (308–450) | 79,3 (66–106) | 1 | 1,0 % |
 
- el límite de tokens de entrada del modelo de embeddings es de 8191 tokens
+ El límite de tokens de entrada del modelo de embeddings es de 8191 tokens
 
 Respuesta cruda de la prueba por encima del límite (9001 tokens):
 
@@ -283,7 +283,7 @@ Frase «vender por internet»
 Frase «pagar con tarjeta»
   9  0.6899  Payment gateway core
   12 0.7147  Merchant dashboard
-  10 0.739  5  Real-time fraud detection
+  10 0.7395  Real-time fraud detection
   11 0.7642  Settlement reconciliation
   2  0.7782  PSD2 open banking connectors
 ```
