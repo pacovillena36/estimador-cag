@@ -1,6 +1,17 @@
-cp# Flujo funcional del estimador
+# Flujo funcional del estimador
 
-Así funciona la aplicación vista desde fuera, siguiendo el camino de una transcripción desde que la envías hasta que recibes la estimación, y después qué cambia cuando sigues hablando en la misma conversación.
+Así funciona la aplicación vista desde fuera, siguiendo el camino de una transcripción desde que la envías hasta que recibes la estimación, y después qué cambia cuando sigues hablando en la misma conversación. Al final se describe el archivo de presupuestos históricos y lo que todavía falta.
+
+## Situación actual
+
+La aplicación tiene **dos flujos que hoy no están conectados**:
+
+| Flujo | Qué hace | Quién lo usa | Qué no hace |
+|---|---|---|---|
+| **Estimación** (secciones 0 a 11) | Convierte una transcripción o una descripción en una estimación con el modelo | Streamlit, con las sesiones | No consulta los presupuestos históricos |
+| **Archivo de presupuestos** (sección 12) | Guarda presupuestos históricos y busca los fragmentos más parecidos a un texto | `seed` para la carga; `/search` y `/embeddings/encode` no tienen ningún llamador dentro de la aplicación | No genera estimaciones: solo devuelve lo encontrado |
+
+Por tanto, **las estimaciones se generan solo con el modelo, sin apoyarse en proyectos anteriores**. El diagnóstico completo, con sus pruebas y la propuesta de evolución, está en `arquitectura-actual.md`.
 
 ---
 
@@ -16,7 +27,7 @@ El cliente (Streamlit u otro) abre primero una **sesión** con `POST /api/v1/ses
 
 `POST /api/v1/sessions/{id}/estimate` con:
 
-- la **transcripción** de la reunión (obligatoria, sin espacios sobrantes y con un límite de caracteres),
+- la **transcripción** de la reunión (obligatoria, sin espacios sobrantes y con un máximo de 20.000 caracteres por defecto),
 - el **tipo de proyecto**, el **nivel de detalle** y el **formato de salida**,
 - **adjuntos** PDF o DOCX (opcionales),
 - `mode` (opcional): `actor` (una sola respuesta del modelo) o `acb` (respuesta revisada).
@@ -87,7 +98,7 @@ Se describe en la sección siguiente. Lo importante: **la memoria solo avanza co
 
 Se guarda el gasto del turno (tokens, coste, tiempo, modelo elegido y regla que lo decidió) y se registra un resumen del turno en los logs. Después se devuelve la **estimación estructurada**. El cliente decide cómo pintarla (tabla, lista…); el servidor siempre devuelve los mismos datos. Con `GET /sessions/{id}` puedes ver el estado: datos del proyecto, número de turnos, gasto y modelo usado.
 
-> Nota: el endpoint sin conversación (`POST /api/v1/estimate`) recorre un camino parecido pero **sin memoria**. Ese sí usa una **caché por similitud** (Redis + embeddings: guarda respuestas a descripciones parecidas). En las sesiones no se usa, porque con historial dos transcripciones parecidas no piden lo mismo.
+> Nota: el endpoint sin conversación (`POST /api/v1/estimate`) recorre un camino parecido pero **sin memoria** y con una descripción de 2.000 caracteres como máximo por defecto. Ese sí usa una **caché por similitud** (Redis + embeddings: guarda respuestas a descripciones parecidas). Por defecto está en modo `shadow`: consulta y escribe en la caché para medir, pero siempre responde con el modelo; solo en modo `active` devuelve la respuesta guardada. En las sesiones no se usa, porque con historial dos transcripciones parecidas no piden lo mismo. Streamlit no llama a este endpoint.
 
 ---
 
@@ -135,3 +146,61 @@ Se guarda en `<project_metadata>`. El prompt indica que **si la transcripción a
 | 8+ | instrucciones (ficha + resumen + anclas) + últimos 6 turnos + mensaje | modelo potente por "conversación larga"; el resumen se amplía con cada turno que sale |
 
 "Nueva conversación" borra la sesión (`DELETE`) y empieza de cero.
+
+---
+
+## 12. El archivo de presupuestos históricos
+
+Este flujo funciona por su cuenta: nada de lo que hace llega a las estimaciones de las secciones anteriores.
+
+### Carga al arrancar
+
+Con `docker compose up -d`, los servicios arrancan en este orden:
+
+1. **`postgres`** se levanta y espera a estar listo.
+2. **`migrate`** crea o actualiza las tablas y termina.
+3. **`api`** arranca y queda disponible.
+4. **`seed`** carga los presupuestos de `data/` a través de `POST /embeddings/ingest` y termina.
+
+Repetir el arranque no duplica nada: un presupuesto ya cargado se salta. El archivo tiene ahora **15 presupuestos y 52 fragmentos (chunks)** de los sectores finance, ecommerce, healthcare e industrial.
+
+### Cargar un presupuesto (`POST /embeddings/ingest`)
+
+1. Se comprueba el tamaño de la petición (2 MB como máximo por defecto) y el formato del presupuesto.
+2. Si ya existe uno con el mismo `source_path`, la respuesta es un **409**.
+3. Cada componente del presupuesto se convierte en un fragmento, con una cabecera que indica su proyecto, sector, año y tecnología principal.
+4. Se pide a OpenAI el embedding de cada fragmento (`text-embedding-3-small`, 1536 dimensiones). Si falla, la respuesta es un **502** y no se guarda nada.
+5. El presupuesto y sus fragmentos se guardan juntos en PostgreSQL. Las horas, el sector y otros datos quedan como metadatos.
+
+### Buscar (`POST /search`)
+
+Recibe un texto (`query`) y cuántos resultados quiere (`k`, 5 por defecto y 50 como máximo):
+
+1. Si el texto supera los **2.000 caracteres**, la respuesta es un **422**.
+2. Se calcula el embedding del texto y se ordenan todos los fragmentos por distancia coseno.
+3. Se devuelven los `k` más cercanos con su contenido, distancia y metadatos.
+
+Solo ordena por parecido: no filtra por sector, no limita los resultados por presupuesto y no descarta los poco parecidos. Tampoco pasa por los filtros de entrada de la sección 5.
+
+### Calcular un embedding (`POST /embeddings/encode`)
+
+Recibe de 1 a 32 textos y devuelve el vector de cada uno, comparable con los del archivo, sin guardar nada. Un texto de más de 8.191 tokens se rechaza con un **422**: no se recorta.
+
+---
+
+## 13. Lo que falta hoy
+
+Comprobado con la reunión de ejemplo `examples/transcripts/02_ambiguous.txt`:
+
+- **La búsqueda no llega a la estimación.** Lo que encuentra se devuelve a quien llama y ahí termina.
+- **Una transcripción normal puede no entrar en la búsqueda.** Esa reunión, de unos 5 minutos, tiene 2.853 caracteres, así que recibe un 422, aunque las sesiones sí la aceptarían.
+- **Los resultados son poco precisos.** Al buscar con el embedding de la reunión completa, los 5 resultados son de ecommerce, pero solo 1 es claramente relevante, y 4 proceden del mismo presupuesto.
+- **Nada avisa de lo que falta.** No hay ningún proyecto de fidelización en el archivo, pero siempre se devuelven `k` resultados.
+
+Además:
+
+- **No hay usuarios ni permisos.** No existe backend de negocio ni inicio de sesión: Streamlit llama directamente al servicio IA. Los puertos solo se publican en `127.0.0.1`.
+- **Las conversaciones no se conservan.** Viven en la memoria del servidor, como explica la sección 0.
+- **No queda registro de lo recuperado.** Los logs de la búsqueda guardan cuántos resultados hubo y el tiempo, pero no cuáles fueron.
+
+La evolución propuesta para cerrar estos puntos está en la sección 4 de `arquitectura-actual.md`. **Es solo una propuesta: nada de eso está construido.**
